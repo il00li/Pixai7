@@ -216,10 +216,3 @@ def main():
             port=port,
             webhook_url=WEBHOOK_URL,
             secret_token=TOKEN
-        )
-    else:
-        # للتشغيل المحلي
-        application.run_polling()
-
-if __name__ == '__main__':
-    main()
