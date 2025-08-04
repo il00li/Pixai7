@@ -188,7 +188,7 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 def main():
-    # إنشاء التطبيق مع إعدادات محدثة
+    # إنشاء التطبيق
     application = Application.builder().token(TOKEN).build()
     
     # تسجيل handlers
@@ -207,12 +207,14 @@ def main():
     for handler in handlers:
         application.add_handler(handler)
     
-    # تشغيل البوت بطريقة متوافقة مع الإصدار 20.x
-    if "RENDER" in os.environ:
-        # للتشغيل على Render
-        port = int(os.environ.get('PORT', 8443))
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            webhook_url=WEBHOOK_URL,
-            secret_token=TOKEN
+    # تشغيل البوت باستخدام ويب هووك فقط
+    port = int(os.environ.get('PORT', 8443))
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        webhook_url=WEBHOOK_URL,
+        secret_token=TOKEN
+    )
+
+if __name__ == '__main__':
+    main()
