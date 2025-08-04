@@ -188,24 +188,19 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 def main():
-    # إنشاء التطبيق
+    # إنشاء التطبيق بدون استخدام Updater
     application = Application.builder().token(TOKEN).build()
     
     # تسجيل handlers
-    handlers = [
-        CommandHandler('start', start),
-        CallbackQueryHandler(check_subscription_callback, pattern='^check_subscription$'),
-        CallbackQueryHandler(start_search, pattern='^search$'),
-        CallbackQueryHandler(show_about, pattern='^about$'),
-        CallbackQueryHandler(back_to_menu, pattern='^back$'),
-        CallbackQueryHandler(back_to_menu, pattern='^back_to_menu$'),
-        MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search),
-        CallbackQueryHandler(navigate_results, pattern='^(prev|next)$'),
-        CallbackQueryHandler(like_result, pattern='^like$')
-    ]
-    
-    for handler in handlers:
-        application.add_handler(handler)
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(check_subscription_callback, pattern='^check_subscription$'))
+    application.add_handler(CallbackQueryHandler(start_search, pattern='^search$'))
+    application.add_handler(CallbackQueryHandler(show_about, pattern='^about$'))
+    application.add_handler(CallbackQueryHandler(back_to_menu, pattern='^back$'))
+    application.add_handler(CallbackQueryHandler(back_to_menu, pattern='^back_to_menu$'))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search))
+    application.add_handler(CallbackQueryHandler(navigate_results, pattern='^(prev|next)$'))
+    application.add_handler(CallbackQueryHandler(like_result, pattern='^like$'))
     
     # تشغيل البوت باستخدام ويب هووك فقط
     port = int(os.environ.get('PORT', 8443))
@@ -213,7 +208,8 @@ def main():
         listen="0.0.0.0",
         port=port,
         webhook_url=WEBHOOK_URL,
-        secret_token=TOKEN
+        secret_token=TOKEN,
+        drop_pending_updates=True
     )
 
 if __name__ == '__main__':
