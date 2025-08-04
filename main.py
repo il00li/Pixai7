@@ -188,7 +188,7 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAIN_MENU
 
 def main():
-    # إنشاء التطبيق بدون استخدام Updater
+    # إنشاء التطبيق باستخدام ApplicationBuilder
     application = Application.builder().token(TOKEN).build()
     
     # تسجيل handlers
