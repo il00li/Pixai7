@@ -15,12 +15,14 @@ from telegram.ext import (
 )
 import requests
 import datetime
+import os
 
 # إعدادات البوت
 TOKEN = "7742801098:AAFFk0IuvH49BZbIuDocUILi2PcFyEzaI8s"
 PEXELS_API_KEY = "1OrBtuFWP0BxjzlGqusrMj6RTjy7i8duDbgVDwJbSehBlHgRxKMnuG4F"
 CHANNELS = ["@crazys7", "@AWU87"]
-MANAGER_ID = "YOUR_MANAGER_ID_HERE"  # استبدل بمعرف مدير البوت (مثل: 123456789)
+MANAGER_ID = 7251748706  # معرف المدير المحدث
+WEBHOOK_URL = "https://pixai7.onrender.com"  # رابط الويب هووك
 
 # حالات المستخدم
 (
@@ -266,7 +268,7 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await main_menu(update, context)
     return MAIN_MENU
 
-# إعداد البوت
+# إعداد البوت مع ويب هووك
 def main():
     application = Application.builder().token(TOKEN).build()
 
@@ -289,7 +291,17 @@ def main():
     application.add_handler(CallbackQueryHandler(navigate_results, pattern='^(prev|next)$'))
     application.add_handler(CallbackQueryHandler(like_result, pattern='^like$'))
 
-    application.run_polling()
+    # تعيين ويب هووك (للاستخدام على Render)
+    if "RENDER" in os.environ:
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.environ.get("PORT", 8443)),
+            webhook_url=WEBHOOK_URL,
+            secret_token='YOUR_SECRET_TOKEN'  # يمكنك إضافة توكن سري إذا لزم الأمر
+        )
+    else:
+        # للتشغيل المحلي
+        application.run_polling()
 
 if __name__ == '__main__':
     main()
