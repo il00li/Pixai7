@@ -1,223 +1,478 @@
-import logging
-from aiogram import Bot, Dispatcher, types, F, Router
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-import requests
-import datetime
-import os
-import asyncio
+import telebot
+import sqlite3
+import time
+import threading
+from datetime import datetime, timedelta
+import google.generativeai as genai
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ================ إعدادات البوت ================
-TOKEN = "7742801098:AAFFk0IuvH49BZbIuDocUILi2PcFyEzaI8s"
-PEXELS_API_KEY = "1OrBtuFWP0BxjzlGqusrMj6RTjy7i8duDbgVDwJbSehBlHgRxKMnuG4F"
-CHANNELS = ["@crazys7", "@AWU87"]
-MANAGER_ID = 7251748706
-WEBHOOK_URL = "https://pixai7.onrender.com"
+# إعدادات الذكاء الاصطناعي
+genai.configure(api_key='AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE')
+model = genai.GenerativeModel('gemini-pro')
 
-# ================ حالات المستخدم ================
-class UserState(StatesGroup):
-    MAIN_MENU = State()
-    SEARCHING = State()
-    RESULTS = State()
+# توكن البوت
+TOKEN = '8312137482:AAEORpBnD8CmFfB39ayJT4UputPoSh_qCRw'
+bot = telebot.TeleBot(TOKEN)
 
-# ================ إعداد التسجيل ================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# إعدادات المدير
+ADMIN_ID = 8419586314
+DEVELOPER_INFO = """
+مطور مبتدئ في عالم بوتات تيليجرام، بدأ رحلته بشغف كبير لتعلم البرمجة وصناعة أدوات ذكية تساعد المستخدمين وتضيف قيمة للمجتمعات الرقمية. يسعى لتطوير مهاراته يومًا بعد يوم من خلال التجربة، التعلم، والمشاركة في مشاريع بسيطة لكنها فعالة.
 
-# ================ إنشاء كائنات البوت ================
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-router = Router()
-dp.include_router(router)
+ما يميزه في هذه المرحلة:
+- حب الاستكشاف والتعلم الذاتي
+- بناء بوتات بسيطة بمهام محددة
+- استخدام أدوات مثل BotFather و Python
+- الانفتاح على النقد والتطوير المستمر
 
-# ================ وظائف البوت ================
-async def notify_manager(user: types.User):
-    try:
-        user_info = f"👤 مستخدم جديد انضم إلى القنوات!\n\n🆔 المعرف: {user.id}\n👤 الاسم: {user.first_name}\n📅 التاريخ: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        if user.username: user_info += f"\n🔖 اليوزر: @{user.username}"
-        await bot.send_message(chat_id=MANAGER_ID, text=user_info)
-    except Exception as e:
-        logger.error(f"خطأ في إرسال إشعار للمدير: {e}")
+القنوات المرتبطة:
+@crazys7 - @AWU87
 
-async def check_subscription(user_id: int):
-    try:
-        for channel in CHANNELS:
-            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
+رؤية المطور:
+الانطلاق من الأساسيات نحو الاحتراف، خطوة بخطوة، مع طموح لصناعة بوتات تلبي احتياجات حقيقية وتحدث فرقًا.
+
+للتواصل:
+تابع الحساب @Ili8_8ill
+"""
+
+# إعداد قاعدة البيانات
+conn = sqlite3.connect('bot_db.sqlite', check_same_thread=False)
+c = conn.cursor()
+
+# إنشاء الجداول
+c.execute('''CREATE TABLE IF NOT EXISTS mandatory_channels (
+             channel_id TEXT PRIMARY KEY)''')
+
+c.execute('''CREATE TABLE IF NOT EXISTS users (
+             user_id INTEGER PRIMARY KEY,
+             username TEXT,
+             invite_count INTEGER DEFAULT 0,
+             is_banned BOOLEAN DEFAULT 0)''')
+
+c.execute('''CREATE TABLE IF NOT EXISTS channels (
+             channel_id TEXT PRIMARY KEY,
+             owner_id INTEGER,
+             frequency INTEGER,
+             is_active BOOLEAN DEFAULT 0,
+             next_post_time DATETIME,
+             FOREIGN KEY(owner_id) REFERENCES users(user_id))''')
+
+c.execute('''CREATE TABLE IF NOT EXISTS invites (
+             code TEXT PRIMARY KEY,
+             creator_id INTEGER,
+             used_count INTEGER DEFAULT 0)''')
+
+conn.commit()
+
+# وظيفة مساعدة للتحقق من الاشتراك
+def check_subscription(user_id):
+    c.execute("SELECT channel_id FROM mandatory_channels")
+    mandatory_channels = c.fetchall()
+    
+    for channel in mandatory_channels:
+        try:
+            chat_member = bot.get_chat_member(channel[0], user_id)
+            if chat_member.status not in ['member', 'administrator', 'creator']:
                 return False
-        return True
-    except Exception as e:
-        logger.error(f"خطأ في التحقق من الاشتراك: {e}")
-        return False
+        except Exception as e:
+            print(f"Error checking subscription: {e}")
+            return False
+    return True
 
-@router.message(Command("start"))
-async def start(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    if await check_subscription(user_id):
-        await notify_manager(message.from_user)
-        await show_main_menu(message, state)
-    else:
-        await show_channels(message)
+# وظيفة إنشاء رابط دعوة
+def generate_invite_link(user_id):
+    code = f"INV_{user_id}_{int(time.time())}"
+    c.execute("INSERT OR REPLACE INTO invites (code, creator_id) VALUES (?, ?)", (code, user_id))
+    conn.commit()
+    return f"https://t.me/{(bot.get_me()).username}?start={code}"
 
-async def show_main_menu(message: types.Message, state: FSMContext):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="انقر للبحث 🎧", callback_data='search')],
-        [InlineKeyboardButton(text="حـــ🤍ـــول", callback_data='about')]
-    ])
-    await message.answer("🌟 قائمة البحث الرئيسية 🌟", reply_markup=keyboard)
-    await state.set_state(UserState.MAIN_MENU)
-
-async def show_channels(message: types.Message):
-    buttons = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="قناة 1", url="https://t.me/crazys7"),
-         InlineKeyboardButton(text="قناة 2", url="https://t.me/AWU87")],
-        [InlineKeyboardButton(text="تحقق | Check", callback_data='check_subscription')]
-    ])
-    await message.answer("❗️ يجب الاشتراك في القنوات التالية أولاً:", reply_markup=buttons)
-
-@router.callback_query(F.data == 'check_subscription')
-async def check_subscription_callback(callback: CallbackQuery, state: FSMContext):
-    if await check_subscription(callback.from_user.id):
-        await notify_manager(callback.from_user)
-        await callback.answer("تم التحقق بنجاح! ✅")
-        await show_main_menu(callback.message, state)
-    else:
-        await callback.answer("لم تكتمل الاشتراكات بعد! ❌", show_alert=True)
-
-@router.callback_query(F.data == 'search')
-async def start_search(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("🔎 أرسل كلمة البحث الآن:")
-    await state.set_state(UserState.SEARCHING)
-
-@router.message(UserState.SEARCHING)
-async def perform_search(message: types.Message, state: FSMContext):
-    search_query = message.text
-    url = f"https://api.pexels.com/v1/search?query={search_query}&per_page=80"
-    headers = {"Authorization": PEXELS_API_KEY}
-    
+# وظيفة إنشاء محتوى باستخدام الذكاء الاصطناعي
+def generate_ai_content():
     try:
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            results = response.json().get('photos', [])
-            if results:
-                await state.update_data(results=results, current_index=0, current_query=search_query)
-                await show_result(message, state)
-                await state.set_state(UserState.RESULTS)
-                return
-        await message.answer("⚠️ لم يتم العثور على نتائج. حاول بكلمات أخرى.")
+        response = model.generate_content("أنشئ محتوى عشوائي مناسب لقناة تليجرام")
+        return response.text
     except Exception as e:
-        logger.error(f"خطأ في البحث: {e}")
-        await message.answer("❌ حدث خطأ في البحث. يرجى المحاولة لاحقًا.")
-    await show_main_menu(message, state)
-    await state.set_state(UserState.MAIN_MENU)
+        print(f"AI Error: {e}")
+        return "محتوى تجريبي للنشر 🚀"
 
-async def show_result(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    index = data['current_index']
-    result = data['results'][index]
+# وظيفة النشر التلقائي
+def auto_posting():
+    while True:
+        try:
+            now = datetime.now()
+            c.execute("SELECT channel_id, frequency FROM channels WHERE is_active = 1 AND next_post_time <= ?", (now,))
+            channels = c.fetchall()
+            
+            for channel in channels:
+                content = generate_ai_content()
+                try:
+                    bot.send_message(channel[0], content)
+                    
+                    # تحديث وقت النشر التالي
+                    next_time = now + timedelta(hours=channel[1])
+                    c.execute("UPDATE channels SET next_post_time = ? WHERE channel_id = ?", (next_time, channel[0]))
+                    conn.commit()
+                except Exception as e:
+                    print(f"Error posting to channel: {e}")
+                    # تعطيل القناة إذا كانت هناك مشكلة
+                    c.execute("UPDATE channels SET is_active = 0 WHERE channel_id = ?", (channel[0],))
+                    conn.commit()
+            
+            time.sleep(60)  # التحقق كل دقيقة
+        except Exception as e:
+            print(f"Auto-posting error: {e}")
+            time.sleep(300)
+
+# بدء خلفية النشر التلقائي
+thread = threading.Thread(target=auto_posting)
+thread.daemon = True
+thread.start()
+
+# لوحة المفاتيح الرئيسية
+def main_keyboard(user_id):
+    keyboard = InlineKeyboardMarkup(row_width=2)
     
-    keyboard = []
-    if index > 0: keyboard.append(InlineKeyboardButton(text="« السابق", callback_data='prev'))
-    if index < len(data['results']) - 1: keyboard.append(InlineKeyboardButton(text="التالي »", callback_data='next'))
+    c.execute("SELECT COUNT(*) FROM channels WHERE owner_id = ?", (user_id,))
+    channel_count = c.fetchone()[0]
     
-    action_buttons = [
-        InlineKeyboardButton(text="اعجبني ❤️", callback_data='like'),
-        InlineKeyboardButton(text="رجوع ↩️", callback_data='back_to_menu')
-    ]
+    # التحقق من عضوية VIP
+    c.execute("SELECT invite_count FROM users WHERE user_id = ?", (user_id,))
+    invite_count = c.fetchone()[0] if c.fetchone() else 0
     
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=[keyboard, action_buttons])
+    if channel_count == 0 or invite_count >= 5:
+        keyboard.add(InlineKeyboardButton("اضف قناتك🧚", callback_data="add_channel"))
     
-    await message.answer_photo(
-        photo=result['src']['large'],
-        caption=f"📸 المصور: {result['photographer']}",
-        reply_markup=reply_markup
+    c.execute("SELECT is_active FROM channels WHERE owner_id = ?", (user_id,))
+    active_status = "🟢" if any(row[0] for row in c.fetchall()) else "🔴"
+    
+    keyboard.add(
+        InlineKeyboardButton(f"تفعيل النشر {active_status}", callback_data="toggle_posting"),
+        InlineKeyboardButton("احصائيات🐾", callback_data="stats"),
+        InlineKeyboardButton("المطور </>", callback_data="developer")
     )
+    return keyboard
 
-@router.callback_query(F.data.in_(['prev', 'next']), UserState.RESULTS)
-async def navigate_results(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    current_index = data['current_index']
-    new_index = current_index + 1 if callback.data == 'next' else current_index - 1
-    await state.update_data(current_index=new_index)
-    await callback.message.delete()
-    await show_result(callback.message, state)
-
-@router.callback_query(F.data == 'like', UserState.RESULTS)
-async def like_result(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.answer("💚 تمت الإعجاب بالصورة!")
-    await callback.message.answer("🔍 لإجراء بحث جديد، أرسل /start")
-
-@router.callback_query(F.data == 'about')
-async def show_about(callback: CallbackQuery):
-    about_text = """
-       🌿🌿🌿
-     🌿      🌿
-   🌿        🌿
- 🌿 @AWU87  🌿
-   🌿            🌿
-     🌿 @crazys7 🌿
-         \     /
-          \   /
-           | |
-           | |
-          /   \\
-         /_____\\
-      🌱 أرض الإبداع 🌱
-    """
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="رجوع ↩️", callback_data='back')]
-    ])
-    await callback.message.edit_text(about_text, reply_markup=keyboard)
-
-@router.callback_query(F.data.in_(['back', 'back_to_menu']))
-async def back_to_menu(callback: CallbackQuery, state: FSMContext):
-    await show_main_menu(callback.message, state)
-
-# ================ إعدادات التشغيل ================
-async def on_startup():
-    await bot.set_webhook(WEBHOOK_URL)
-    logging.info("تم تشغيل البوت بنجاح!")
-
-async def on_shutdown():
-    await bot.delete_webhook()
-    logging.info("إيقاف البوت...")
-
-# ================ التشغيل الرئيسي ================
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == '__main__':
-    # تحديد منفذ التشغيل (افتراضي 8443)
-    port = int(os.environ.get('PORT', 8443))
+# معالج البداية
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+    args = message.text.split()[1] if len(message.text.split()) > 1 else None
     
-    # التشغيل على Render (يفترض وجود متغير RENDER)
-    if "RENDER" in os.environ:
-        # تشغيل كخادم ويب
-        from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-        from aiohttp import web
+    # التحقق من رابط الدعوة
+    if args and args.startswith('INV_'):
+        c.execute("SELECT creator_id FROM invites WHERE code = ?", (args,))
+        invite_data = c.fetchone()
+        if invite_data:
+            creator_id = invite_data[0]
+            c.execute("UPDATE users SET invite_count = invite_count + 1 WHERE user_id = ?", (creator_id,))
+            c.execute("UPDATE invites SET used_count = used_count + 1 WHERE code = ?", (args,))
+            conn.commit()
+    
+    # تسجيل المستخدم
+    c.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", 
+              (user_id, message.from_user.username))
+    conn.commit()
+    
+    # التحقق من الاشتراك
+    if not check_subscription(user_id):
+        c.execute("SELECT channel_id FROM mandatory_channels")
+        channels = [row[0] for row in c.fetchall()]
         
-        app = web.Application()
-        webhook_requests_handler = SimpleRequestHandler(
-            dispatcher=dp,
-            bot=bot,
+        if channels:
+            keyboard = InlineKeyboardMarkup()
+            for channel in channels:
+                keyboard.add(InlineKeyboardButton(f"انضم {channel}", url=f"https://t.me/{channel}"))
+            keyboard.add(InlineKeyboardButton("تم الاشتراك ✅", callback_data="check_subscription"))
+            
+            bot.send_message(user_id, "يجب الاشتراك في القنوات التالية أولاً:", reply_markup=keyboard)
+            return
+    
+    # عرض القائمة الرئيسية
+    bot.send_message(user_id, "مرحباً! اختر أحد الخيارات:", reply_markup=main_keyboard(user_id))
+
+# معالج الأزرار
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    user_id = call.from_user.id
+    data = call.data
+    
+    if data == "check_subscription":
+        if check_subscription(user_id):
+            bot.edit_message_text("تم التحقق بنجاح! اختر أحد الخيارات:", 
+                                  user_id, 
+                                  call.message.message_id, 
+                                  reply_markup=main_keyboard(user_id))
+        else:
+            bot.answer_callback_query(call.id, "لم تكتمل الاشتراكات بعد!", show_alert=True)
+    
+    elif data == "add_channel":
+        # التحقق من عدد القنوات
+        c.execute("SELECT COUNT(*) FROM channels WHERE owner_id = ?", (user_id,))
+        channel_count = c.fetchone()[0]
+        
+        # التحقق من عضوية VIP للإضافة الثانية
+        if channel_count >= 1:
+            c.execute("SELECT invite_count FROM users WHERE user_id = ?", (user_id,))
+            invite_count = c.fetchone()[0]
+            
+            if invite_count < 5:
+                keyboard = InlineKeyboardMarkup()
+                keyboard.add(InlineKeyboardButton("إنشاء رابط دعوة", callback_data="create_invite"))
+                keyboard.add(InlineKeyboardButton("اتصل بالمدير", url=f"tg://user?id={ADMIN_ID}"))
+                
+                bot.edit_message_text("لإضافة قناة أخرى، يجب دعوة 5 أعضاء:\n\n"
+                                     f"دعواتك الحالية: {invite_count}/5",
+                                     user_id,
+                                     call.message.message_id,
+                                     reply_markup=keyboard)
+                return
+        
+        # بدء إضافة القناة
+        msg = bot.edit_message_text("أرسل معرف القناة (مثل @channel_name):", 
+                                   user_id, 
+                                   call.message.message_id)
+        bot.register_next_step_handler(msg, process_channel_name)
+
+    elif data == "create_invite":
+        invite_link = generate_invite_link(user_id)
+        bot.edit_message_text(f"رابط الدعوة الخاص بك:\n\n{invite_link}\n\n"
+                             "شارك هذا الرابط مع أصدقائك، سيتم احتساب الدعوة بعد اشتراكهم في القنوات الإجبارية.",
+                             user_id,
+                             call.message.message_id,
+                             reply_markup=InlineKeyboardMarkup().add(
+                                 InlineKeyboardButton("العودة", callback_data="back_to_main")))
+
+    elif data == "toggle_posting":
+        c.execute("SELECT channel_id, is_active FROM channels WHERE owner_id = ?", (user_id,))
+        channels = c.fetchall()
+        
+        if not channels:
+            bot.answer_callback_query(call.id, "ليس لديك قنوات مفعلة!", show_alert=True)
+            return
+        
+        keyboard = InlineKeyboardMarkup()
+        for channel_id, is_active in channels:
+            status = "🟢" if is_active else "🔴"
+            keyboard.add(InlineKeyboardButton(f"{channel_id} {status}", 
+                                            callback_data=f"toggle_{channel_id}"))
+        
+        keyboard.add(InlineKeyboardButton("العودة", callback_data="back_to_main"))
+        bot.edit_message_text("اختر القناة لتغيير حالة النشر:",
+                             user_id,
+                             call.message.message_id,
+                             reply_markup=keyboard)
+
+    elif data.startswith("toggle_"):
+        channel_id = data[7:]
+        c.execute("SELECT is_active FROM channels WHERE channel_id = ?", (channel_id,))
+        is_active = not c.fetchone()[0]
+        
+        c.execute("UPDATE channels SET is_active = ? WHERE channel_id = ?", (is_active, channel_id))
+        conn.commit()
+        
+        # تحديث الزر في الرسالة
+        callback_handler(call)
+
+    elif data == "stats":
+        c.execute("SELECT COUNT(*) FROM channels WHERE owner_id = ?", (user_id,))
+        channel_count = c.fetchone()[0]
+        
+        c.execute("SELECT invite_count FROM users WHERE user_id = ?", (user_id,))
+        invite_count = c.fetchone()[0]
+        
+        active_channels = []
+        c.execute("SELECT channel_id FROM channels WHERE owner_id = ? AND is_active = 1", (user_id,))
+        for row in c.fetchall():
+            active_channels.append(row[0])
+        
+        stats_text = (
+            f"📊 احصائياتك:\n\n"
+            f"• عدد القنوات: {channel_count}\n"
+            f"• القنوات النشطة: {', '.join(active_channels) if active_channels else 'لا يوجد'}\n"
+            f"• عدد الدعوات: {invite_count}\n"
+            f"• القنوات المطلوبة للإضافة التالية: {max(0, 5 - invite_count)}"
         )
         
-        webhook_requests_handler.register(app, path="/")
-        setup_application(app, dp, bot=bot)
+        bot.edit_message_text(stats_text,
+                            user_id,
+                            call.message.message_id,
+                            reply_markup=InlineKeyboardMarkup().add(
+                                InlineKeyboardButton("العودة", callback_data="back_to_main")))
+
+    elif data == "developer":
+        bot.edit_message_text(DEVELOPER_INFO,
+                            user_id,
+                            call.message.message_id,
+                            reply_markup=InlineKeyboardMarkup().add(
+                                InlineKeyboardButton("العودة", callback_data="back_to_main")))
+
+    elif data == "back_to_main":
+        bot.edit_message_text("اختر أحد الخيارات:",
+                            user_id,
+                            call.message.message_id,
+                            reply_markup=main_keyboard(user_id))
+
+# معالج إضافة القناة
+def process_channel_name(message):
+    user_id = message.from_user.id
+    channel_id = message.text.strip().replace('@', '')
+    
+    # التحقق من صحة القناة
+    try:
+        chat = bot.get_chat(f"@{channel_id}")
+        if chat.type not in ['channel', 'supergroup']:
+            bot.send_message(user_id, "هذا ليس معرف قناة صالح!")
+            return
+    except:
+        bot.send_message(user_id, "تعذر العثور على القناة! تأكد من إضافة البوت كمسؤول.")
+        return
+    
+    # التحقق من ملكية القناة
+    try:
+        admins = bot.get_chat_administrators(f"@{channel_id}")
+        if not any(admin.user.id == user_id for admin in admins):
+            bot.send_message(user_id, "يجب أن تكون مسؤولاً في القناة لإضافتها!")
+            return
+    except:
+        bot.send_message(user_id, "تعذر التحقق من الصلاحيات! تأكد من إضافة البوت كمسؤول.")
+        return
+    
+    # حفظ القناة مؤقتاً
+    bot.send_message(user_id, "تم التحقق من القناة بنجاح!")
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("كل 12 ساعة", callback_data=f"freq_{channel_id}_12"),
+        InlineKeyboardButton("كل 24 ساعة", callback_data=f"freq_{channel_id}_24")
+    )
+    bot.send_message(user_id, "اختر فترة النشر:", reply_markup=keyboard)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('freq_'))
+def set_frequency(call):
+    user_id = call.from_user.id
+    _, channel_id, frequency = call.data.split('_')
+    frequency = int(frequency)
+    
+    # إضافة القناة إلى قاعدة البيانات
+    next_post_time = datetime.now() + timedelta(hours=frequency)
+    c.execute("INSERT OR REPLACE INTO channels (channel_id, owner_id, frequency, next_post_time) VALUES (?, ?, ?, ?)",
+              (channel_id, user_id, frequency, next_post_time))
+    conn.commit()
+    
+    bot.edit_message_text(f"تم إضافة القناة @{channel_id} بنجاح!",
+                         user_id,
+                         call.message.message_id,
+                         reply_markup=InlineKeyboardMarkup().add(
+                             InlineKeyboardButton("العودة", callback_data="back_to_main")))
+
+# لوحة تحكم المدير
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("إدارة القنوات الإجبارية", callback_data="manage_mandatory"),
+        InlineKeyboardButton("إدارة المستخدمين", callback_data="manage_users"),
+        InlineKeyboardButton("حظر مستخدم", callback_data="ban_user"),
+        InlineKeyboardButton("إلغاء حظر مستخدم", callback_data="unban_user")
+    )
+    bot.send_message(ADMIN_ID, "لوحة تحكم المدير:", reply_markup=keyboard)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('manage_'))
+def admin_actions(call):
+    if call.from_user.id != ADMIN_ID:
+        return
+    
+    action = call.data.split('_')[1]
+    
+    if action == "mandatory":
+        keyboard = InlineKeyboardMarkup()
+        c.execute("SELECT channel_id FROM mandatory_channels")
+        channels = c.fetchall()
         
-        async def on_startup(app):
-            await bot.set_webhook(WEBHOOK_URL)
-            logging.info("تم تشغيل البوت بنجاح على Render!")
+        for channel in channels:
+            keyboard.add(InlineKeyboardButton(f"حذف {channel[0]}", callback_data=f"del_mandatory_{channel[0]}"))
         
-        app.on_startup.append(on_startup)
+        keyboard.add(InlineKeyboardButton("إضافة قناة", callback_data="add_mandatory"))
+        keyboard.add(InlineKeyboardButton("إغلاق", callback_data="close_admin"))
         
-        web.run_app(app, host='0.0.0.0', port=port)
+        bot.edit_message_text("القنوات الإجبارية الحالية:",
+                             ADMIN_ID,
+                             call.message.message_id,
+                             reply_markup=keyboard)
+    
+    elif action == "users":
+        # عرض إحصائيات المستخدمين
+        c.execute("SELECT COUNT(*) FROM users")
+        total_users = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
+        banned_users = c.fetchone()[0]
+        
+        bot.edit_message_text(f"إحصائيات المستخدمين:\n\n"
+                             f"• إجمالي المستخدمين: {total_users}\n"
+                             f"• المستخدمين المحظورين: {banned_users}",
+                             ADMIN_ID,
+                             call.message.message_id,
+                             reply_markup=InlineKeyboardMarkup().add(
+                                 InlineKeyboardButton("العودة", callback_data="back_to_admin")))
+
+@bot.callback_query_handler(func=lambda call: call.data == "add_mandatory")
+def add_mandatory_channel(call):
+    msg = bot.send_message(ADMIN_ID, "أرسل معرف القناة الإجبارية (مثل @channel_name):")
+    bot.register_next_step_handler(msg, process_mandatory_channel)
+
+def process_mandatory_channel(message):
+    channel_id = message.text.strip().replace('@', '')
+    c.execute("INSERT OR IGNORE INTO mandatory_channels (channel_id) VALUES (?)", (channel_id,))
+    conn.commit()
+    bot.send_message(ADMIN_ID, f"تمت إضافة القناة @{channel_id} إلى القنوات الإجبارية!")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('del_mandatory_'))
+def delete_mandatory_channel(call):
+    channel_id = call.data.split('_')[2]
+    c.execute("DELETE FROM mandatory_channels WHERE channel_id = ?", (channel_id,))
+    conn.commit()
+    bot.answer_callback_query(call.id, f"تم حذف القناة @{channel_id}!")
+    admin_actions(call)  # تحديث القائمة
+
+@bot.callback_query_handler(func=lambda call: call.data == "ban_user")
+def ban_user_prompt(call):
+    msg = bot.send_message(ADMIN_ID, "أرسل معرف المستخدم لحظره:")
+    bot.register_next_step_handler(msg, process_ban_user)
+
+def process_ban_user(message):
+    try:
+        user_id = int(message.text)
+        c.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
+        c.execute("UPDATE channels SET is_active = 0 WHERE owner_id = ?", (user_id,))
+        conn.commit()
+        bot.send_message(ADMIN_ID, f"تم حظر المستخدم {user_id} وإيقاف قنواته!")
+    except:
+        bot.send_message(ADMIN_ID, "معرف مستخدم غير صالح!")
+
+@bot.callback_query_handler(func=lambda call: call.data == "unban_user")
+def unban_user_prompt(call):
+    msg = bot.send_message(ADMIN_ID, "أرسل معرف المستخدم لإلغاء حظره:")
+    bot.register_next_step_handler(msg, process_unban_user)
+
+def process_unban_user(message):
+    try:
+        user_id = int(message.text)
+        c.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
+        conn.commit()
+        bot.send_message(ADMIN_ID, f"تم إلغاء حظر المستخدم {user_id}!")
+    except:
+        bot.send_message(ADMIN_ID, "معرف مستخدم غير صالح!")
+
+@bot.callback_query_handler(func=lambda call: call.data in ["back_to_admin", "close_admin"])
+def admin_back(call):
+    if call.data == "close_admin":
+        bot.delete_message(ADMIN_ID, call.message.message_id)
     else:
-        # للتشغيل المحلي
-        asyncio.run(main())
+        admin_panel(call.message)
+
+# بدء البوت
+print("تم تشغيل البوت بنجاح!")
+bot.infinity_polling()
