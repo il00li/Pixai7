@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# إدارة قاعدة البيانات
+# إدارة قاعدة البيانات - الإصدار المعدل
 class Database:
     def __init__(self):
         self.conn = sqlite3.connect('instagram_bot.db', check_same_thread=False)
@@ -32,6 +32,7 @@ class Database:
     
     def create_tables(self):
         cursor = self.conn.cursor()
+        # تم إصلاح استعلام إنشاء الجدول هنا
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS accounts (
                 user_id INTEGER,
