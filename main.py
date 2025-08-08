@@ -32,7 +32,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 # ======== إعدادات التكوين ========
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # استبدل بتابع البوت الخاص بك
+TOKEN = "8299954739:AAHlkfRH4N0cDjv-IToJkXQwwIqYCtzcVCQ"  # استبدل بتابع البوت الخاص بك
 CHROME_BIN = "/usr/bin/chromium"  # المسار الصحيح للمتصفح
 REQUIRED_CHANNELS = ["@crazys7", "@AWU87"]  # قنوات الاشتراك الإجباري
 DB_NAME = "instagram_bot.db"
@@ -720,3 +720,4 @@ def main():
 
 if __name__ == "__main__":
     main() 
+
