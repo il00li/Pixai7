@@ -1,17 +1,29 @@
 import os
 import sqlite3
 import time
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    CallbackContext,
+    filters
+)
 
 # إعدادات البوت
 TOKEN = "8299954739:AAHlkfRH4N0cDjv-IToJkXQwwIqYCtzcVCQ" 
 ADMIN_CHAT_ID = "8419586314" 
 REQUIRED_CHANNELS = ["@crazys7", "@AWU87"]  # قنوات الاشتراك الإجباري
+
+# إعداد التسجيل للأخطاء
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # إعداد قاعدة البيانات
 def init_db():
@@ -33,14 +45,27 @@ init_db()
 
 # متابعة المتصفح
 def setup_browser():
-    options = webdriver.ChromeOptions()
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.webdriver.chrome.options import Options
+    
+    options = Options()
     options.add_argument("--disable-notifications")
-    options.add_argument("--headless")  # للتشغيل في الخلفية
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=options
+    )
     return driver
 
 # تسجيل الدخول إلى إنستجرام
 def insta_login(driver, username, password):
+    from selenium.webdriver.common.by import By
     driver.get("https://www.instagram.com/accounts/login/")
     time.sleep(3)
     driver.find_element(By.NAME, "username").send_keys(username)
@@ -51,29 +76,52 @@ def insta_login(driver, username, password):
 
 # نشر على إنستجرام
 def insta_post(driver, image_path, caption=""):
+    from selenium.webdriver.common.by import By
     driver.get("https://www.instagram.com/")
     time.sleep(3)
-    driver.find_element(By.XPATH, "//div[contains(@class, 'x1i10hfl')]").click()
+    
+    # محاولة العثور على زر إنشاء منشور
+    try:
+        driver.find_element(By.XPATH, "//div[contains(@class, 'x1i10hfl')]").click()
+    except:
+        driver.find_element(By.XPATH, "//div[@role='button' and contains(., 'Create')]").click()
+    
     time.sleep(2)
-    driver.find_element(By.XPATH, "//input[@type='file']").send_keys(os.path.abspath(image_path))
+    
+    # رفع الصورة
+    upload_input = driver.find_element(By.XPATH, "//input[@type='file']")
+    upload_input.send_keys(os.path.abspath(image_path))
     time.sleep(3)
-    driver.find_element(By.XPATH, "//div[contains(text(), 'التالي')]").click()
+    
+    # التالي
+    next_buttons = driver.find_elements(By.XPATH, "//div[contains(text(), 'التالي') or contains(text(), 'Next')]")
+    if next_buttons:
+        next_buttons[0].click()
+        time.sleep(2)
+    
+    # إضافة وصف
+    caption_field = driver.find_element(By.XPATH, "//textarea[@aria-label='اكتب تعليقًا...' or @aria-label='Write a caption...']")
+    caption_field.send_keys(caption)
     time.sleep(2)
-    driver.find_element(By.XPATH, "//textarea[@aria-label='اكتب تعليقًا...']").send_keys(caption)
-    time.sleep(2)
-    driver.find_element(By.XPATH, "//div[contains(text(), 'مشاركة')]").click()
-    time.sleep(5)
-    return True
+    
+    # النشر
+    share_buttons = driver.find_elements(By.XPATH, "//div[contains(text(), 'مشاركة') or contains(text(), 'Share')]")
+    if share_buttons:
+        share_buttons[0].click()
+        time.sleep(5)
+        return True
+    return False
 
 # التحقق من الاشتراك في القنوات
-async def check_subscription(update: Update):
+async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     for channel in REQUIRED_CHANNELS:
         try:
-            member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status not in ["member", "administrator", "creator"]:
+            chat_member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if chat_member.status not in ["member", "administrator", "creator"]:
                 return False
-        except:
+        except Exception as e:
+            logger.error(f"Error checking subscription: {e}")
             return False
     return True
 
@@ -87,8 +135,8 @@ def main_keyboard(user_id):
     return InlineKeyboardMarkup(keyboard)
 
 # بدء البوت
-async def start(update: Update, context: CallbackContext):
-    if not await check_subscription(update):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_subscription(update, context):
         await update.message.reply_text("يجب الاشتراك في القنوات التالية أولاً:\n" + "\n".join(REQUIRED_CHANNELS))
         return
     
@@ -98,35 +146,43 @@ async def start(update: Update, context: CallbackContext):
     )
 
 # إضافة حساب جديد
-async def add_account(update: Update, context: CallbackContext):
+async def add_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("أرسل اسم مستخدم إنستجرام وكلمة المرور بهذا الشكل:\nusername:password")
     context.user_data['awaiting_credentials'] = True
 
 # معالجة بيانات الحساب
-async def handle_credentials(update: Update, context: CallbackContext):
+async def handle_credentials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'awaiting_credentials' not in context.user_data:
         return
     
     try:
-        username, password = update.message.text.split(":")
+        text = update.message.text
+        if ':' not in text:
+            await update.message.reply_text("الرجاء استخدام الصيغة الصحيحة: username:password")
+            return
+            
+        username, password = text.split(":", 1)
         user_id = update.effective_user.id
         
         conn = sqlite3.connect('instagram_bot.db')
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO accounts VALUES (?, ?, ?, 0)", (user_id, username.strip(), password.strip()))
+        cursor.execute("INSERT OR REPLACE INTO accounts VALUES (?, ?, ?, 0)", 
+                      (user_id, username.strip(), password.strip()))
         conn.commit()
         conn.close()
         
         await update.message.reply_text("تم حفظ الحساب بنجاح!")
         context.user_data.pop('awaiting_credentials', None)
     except Exception as e:
+        logger.error(f"Error saving credentials: {e}")
         await update.message.reply_text(f"خطأ: {str(e)}\nيرجى المحاولة مرة أخرى")
 
 # إدارة الحسابات
-async def my_accounts(update: Update, context: CallbackContext):
+async def my_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
     user_id = query.from_user.id
     
     conn = sqlite3.connect('instagram_bot.db')
@@ -136,7 +192,7 @@ async def my_accounts(update: Update, context: CallbackContext):
     conn.close()
     
     if not accounts:
-        await query.answer("ليس لديك أي حسابات مسجلة")
+        await query.edit_message_text("ليس لديك أي حسابات مسجلة")
         return
     
     keyboard = []
@@ -152,9 +208,10 @@ async def my_accounts(update: Update, context: CallbackContext):
     )
 
 # إدارة حساب معين
-async def manage_account(update: Update, context: CallbackContext):
+async def manage_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    username = query.data.split("_")[1]
+    await query.answer()
+    username = query.data.split("_", 1)[1]
     
     keyboard = [
         [InlineKeyboardButton("تفعيل/تعطيل", callback_data=f"toggle_{username}")],
@@ -168,37 +225,49 @@ async def manage_account(update: Update, context: CallbackContext):
     )
 
 # تفعيل/تعطيل الحساب
-async def toggle_account(update: Update, context: CallbackContext):
+async def toggle_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    username = query.data.split("_")[1]
+    await query.answer()
+    username = query.data.split("_", 1)[1]
     user_id = query.from_user.id
     
     conn = sqlite3.connect('instagram_bot.db')
     cursor = conn.cursor()
-    cursor.execute("UPDATE accounts SET is_active = NOT is_active WHERE user_id=? AND insta_username=?", (user_id, username))
+    cursor.execute("UPDATE accounts SET is_active = NOT is_active WHERE user_id=? AND insta_username=?", 
+                  (user_id, username))
     conn.commit()
     conn.close()
     
-    await query.answer("تم تغيير حالة الحساب")
     await my_accounts(update, context)
 
 # حذف الحساب
-async def delete_account(update: Update, context: CallbackContext):
+async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    username = query.data.split("_")[1]
+    await query.answer()
+    username = query.data.split("_", 1)[1]
     user_id = query.from_user.id
     
     conn = sqlite3.connect('instagram_bot.db')
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM accounts WHERE user_id=? AND insta_username=?", (user_id, username))
+    cursor.execute("DELETE FROM accounts WHERE user_id=? AND insta_username=?", 
+                  (user_id, username))
     conn.commit()
     conn.close()
     
-    await query.answer("تم حذف الحساب")
+    await query.edit_message_text(f"تم حذف حساب {username} بنجاح!")
     await my_accounts(update, context)
 
+# العودة للقائمة الرئيسية
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "مرحباً! بوت التحكم بحسابات إنستجرام\nاختر أحد الخيارات:",
+        reply_markup=main_keyboard(update.effective_user.id)
+    )
+
 # معالجة الصور للنشر
-async def handle_photo(update: Update, context: CallbackContext):
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     # التحقق من وجود حساب مفعل
@@ -209,14 +278,13 @@ async def handle_photo(update: Update, context: CallbackContext):
     conn.close()
     
     if not account:
-        await update.message.reply_text("ليس لديك حساب مفعل!")
+        await update.message.reply_text("ليس لديك حساب مفعل! الرجاء تفعيل حساب أولاً.")
         return
     
     # تنزيل الصورة
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    image_path = f"{file.file_id}.jpg"
-    await file.download_to_drive(image_path)
+    photo_file = await update.message.photo[-1].get_file()
+    image_path = f"{photo_file.file_id}.jpg"
+    await photo_file.download_to_drive(image_path)
     
     # النشر
     try:
@@ -226,40 +294,60 @@ async def handle_photo(update: Update, context: CallbackContext):
         if "نجاح" in login_status:
             caption = update.message.caption if update.message.caption else ""
             if insta_post(driver, image_path, caption):
-                await update.message.reply_text("تم النشر بنجاح!")
+                await update.message.reply_text("✅ تم النشر بنجاح على إنستجرام!")
             else:
-                await update.message.reply_text("فشل النشر")
+                await update.message.reply_text("❌ فشل في عملية النشر")
         else:
-            await update.message.reply_text("فشل تسجيل الدخول إلى إنستجرام")
+            await update.message.reply_text("❌ فشل تسجيل الدخول إلى إنستجرام")
         
         driver.quit()
     except Exception as e:
-        await update.message.reply_text(f"حدث خطأ: {str(e)}")
+        logger.error(f"Error posting to Instagram: {e}")
+        await update.message.reply_text(f"⚠️ حدث خطأ: {str(e)}")
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
 
+# تعليمات الاستخدام
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    help_text = """
+    📝 دليل استخدام البوت:
+    
+    1. أضف حساب إنستجرام باستخدام /start ثم "إضافة حساب"
+    2. أرسل اسم المستخدم وكلمة المرور بالصيغة: username:password
+    3. تفعيل الحساب من قائمة "حساباتي"
+    4. أرسل صورة مع تعليق (اختياري) ليتم نشرها تلقائياً
+    
+    ⚠️ ملاحظات:
+    - البوت يستخدم حساب تجريبي فقط
+    - تجنب استخدام الحسابات الرئيسية
+    - قد يؤدي الاستخدام المكثف إلى حظر الحساب
+    """
+    await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("العودة", callback_data='back')]
+    ]))
+
+# إعداد وتشغيل البوت
 def main():
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
+    application = Application.builder().token(TOKEN).build()
     
-    # الأوامر
-    dp.add_handler(CommandHandler("start", start))
+    # تسجيل المعالجات
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(add_account, pattern="^add_account$"))
+    application.add_handler(CallbackQueryHandler(my_accounts, pattern="^my_accounts$"))
+    application.add_handler(CallbackQueryHandler(manage_account, pattern="^manage_"))
+    application.add_handler(CallbackQueryHandler(toggle_account, pattern="^toggle_"))
+    application.add_handler(CallbackQueryHandler(delete_account, pattern="^delete_"))
+    application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back$"))
+    application.add_handler(CallbackQueryHandler(help_command, pattern="^help$"))
     
-    # الأزرار التفاعلية
-    dp.add_handler(CallbackQueryHandler(add_account, pattern='^add_account$'))
-    dp.add_handler(CallbackQueryHandler(my_accounts, pattern='^my_accounts$'))
-    dp.add_handler(CallbackQueryHandler(manage_account, pattern='^manage_'))
-    dp.add_handler(CallbackQueryHandler(toggle_account, pattern='^toggle_'))
-    dp.add_handler(CallbackQueryHandler(delete_account, pattern='^delete_'))
-    dp.add_handler(CallbackQueryHandler(my_accounts, pattern='^back$'))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_credentials))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    # معالجة الرسائل
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_credentials))
-    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
-    
-    updater.start_polling()
-    updater.idle()
+    # تشغيل البوت
+    application.run_polling()
 
 if __name__ == '__main__':
     main() 
