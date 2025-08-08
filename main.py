@@ -39,8 +39,7 @@ class Database:
                 insta_password TEXT,
                 is_active INTEGER DEFAULT 0,
                 PRIMARY KEY (user_id, insta_username)
-            )
-        ''')
+            ''')
         self.conn.commit()
     
     def add_account(self, user_id, username, password):
@@ -73,12 +72,21 @@ class Database:
         cursor.execute("UPDATE accounts SET is_active = NOT is_active WHERE user_id=? AND insta_username=?", 
                       (user_id, username))
         self.conn.commit()
+        # إلغاء تفعيل جميع الحسابات الأخرى
+        cursor.execute("UPDATE accounts SET is_active = 0 WHERE user_id=? AND insta_username != ?", 
+                      (user_id, username))
+        self.conn.commit()
     
     def delete_account(self, user_id, username):
         cursor = self.conn.cursor()
         cursor.execute("DELETE FROM accounts WHERE user_id=? AND insta_username=?", 
                       (user_id, username))
         self.conn.commit()
+        
+        # إذا كان الحساب المحذوف هو الحساب النشط، تفعيل آخر حساب متاح
+        accounts = self.get_accounts(user_id)
+        if accounts:
+            self.toggle_account(user_id, accounts[0][0])
 
 db = Database()
 
@@ -133,7 +141,7 @@ def insta_post(driver, image_path, caption=""):
         
         # العثور على زر النشر
         try:
-            create_button = driver.find_element(By.XPATH, "//div[@role='button'][.//*[local-name()='svg' and @aria-label='New post']]")
+            create_button = driver.find_element(By.XPATH, "//div[contains(@aria-label, 'New post')]")
             create_button.click()
         except:
             try:
@@ -185,24 +193,36 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return True
 
 # لوحة التحكم الرئيسية
-def control_keyboard():
+def main_keyboard():
     keyboard = [
         [InlineKeyboardButton("📤 نشر الآن", callback_data='publish_now')],
         [InlineKeyboardButton("🔐 تسجيل الدخول", callback_data='login_account')],
         [InlineKeyboardButton("👤 إدارة الحسابات", callback_data='manage_accounts')],
+        [InlineKeyboardButton("➕ إضافة حساب", callback_data='add_account')],
         [InlineKeyboardButton("❓ مساعدة", callback_data='help')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 # بدء البوت
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_subscription(update, context):
-        await update.message.reply_text("يجب الاشتراك في القنوات التالية أولاً:\n" + "\n".join(REQUIRED_CHANNELS))
+    if update.message:
+        user = update.message.from_user
+    elif update.callback_query:
+        user = update.callback_query.from_user
+    else:
         return
     
-    await update.message.reply_text(
-        "🏆 بوت النشر الآمن لإنستجرام\nاختر أحد الخيارات:",
-        reply_markup=control_keyboard()
+    if not await check_subscription(update, context):
+        await context.bot.send_message(
+            chat_id=user.id,
+            text="يجب الاشتراك في القنوات التالية أولاً:\n" + "\n".join(REQUIRED_CHANNELS)
+        )
+        return
+    
+    await context.bot.send_message(
+        chat_id=user.id,
+        text="🏆 بوت النشر الآمن لإنستجرام\nاختر أحد الخيارات:",
+        reply_markup=main_keyboard()
     )
 
 # معالجة زر "تسجيل الدخول"
@@ -224,7 +244,7 @@ async def login_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "✅" if is_active else "❌"
         keyboard.append([InlineKeyboardButton(f"{status} {username}", callback_data=f"login_{username}")])
     
-    keyboard.append([InlineKeyboardButton("العودة", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("🔙 العودة", callback_data='back_main')])
     
     await query.edit_message_text(
         "🔐 اختر حسابًا لتسجيل الدخول:",
@@ -254,20 +274,31 @@ async def handle_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await wait_msg.edit_text(
             f"🔐 حالة تسجيل الدخول لحساب {username}:\n{login_status}",
-            reply_markup=control_keyboard()
+            reply_markup=main_keyboard()
         )
     except Exception as e:
         logger.error(f"خطأ في تسجيل الدخول: {str(e)}")
         await wait_msg.edit_text(
             f"❌ فشل تسجيل الدخول: {str(e)}",
-            reply_markup=control_keyboard()
+            reply_markup=main_keyboard()
         )
 
 # معالجة زر "نشر الآن"
 async def publish_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("📤 أرسل الآن الصورة التي تريد نشرها مع التعليق (اختياري)")
+    user_id = query.from_user.id
+    
+    # التحقق من وجود حساب نشط
+    account = db.get_active_account(user_id)
+    if not account:
+        await query.edit_message_text("⚠️ ليس لديك حساب مفعل! الرجاء تفعيل حساب أولاً.")
+        return
+    
+    await query.edit_message_text(
+        f"📤 أرسل الآن الصورة التي تريد نشرها على حساب {account[0]} مع التعليق (اختياري)",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data='back_main')]])
+    )
     context.user_data['awaiting_post'] = True
 
 # معالجة المنشور
@@ -302,16 +333,16 @@ async def handle_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if "✅" in login_status:
             if insta_post(driver, image_path, caption):
-                await wait_msg.edit_text("✅ تم النشر بنجاح على إنستجرام!", reply_markup=control_keyboard())
+                await wait_msg.edit_text("✅ تم النشر بنجاح على إنستجرام!", reply_markup=main_keyboard())
             else:
-                await wait_msg.edit_text("❌ فشل في عملية النشر", reply_markup=control_keyboard())
+                await wait_msg.edit_text("❌ فشل في عملية النشر", reply_markup=main_keyboard())
         else:
-            await wait_msg.edit_text(f"❌ {login_status}", reply_markup=control_keyboard())
+            await wait_msg.edit_text(f"❌ {login_status}", reply_markup=main_keyboard())
         
         driver.quit()
     except Exception as e:
         logger.error(f"خطأ في النشر: {e}")
-        await wait_msg.edit_text(f"⚠️ حدث خطأ غير متوقع: {str(e)}", reply_markup=control_keyboard())
+        await wait_msg.edit_text(f"⚠️ حدث خطأ غير متوقع: {str(e)}", reply_markup=main_keyboard())
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
@@ -335,7 +366,7 @@ async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(f"{username} - {status}", callback_data=f"manage_{username}")])
     
     keyboard.append([InlineKeyboardButton("➕ إضافة حساب جديد", callback_data='add_account')])
-    keyboard.append([InlineKeyboardButton("🔙 العودة", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("🔙 العودة", callback_data='back_main')])
     
     await query.edit_message_text(
         "📝 حساباتك المسجلة:",
@@ -347,6 +378,12 @@ async def manage_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     username = query.data.split("_", 1)[1]
+    user_id = query.from_user.id
+    
+    # الحصول على حالة الحساب
+    accounts = db.get_accounts(user_id)
+    is_active = any(acc[0] == username and acc[1] for acc in accounts)
+    status = "✅ مفعل" if is_active else "❌ معطل"
     
     keyboard = [
         [InlineKeyboardButton("🔓 تسجيل الدخول", callback_data=f"login_{username}")],
@@ -356,7 +393,7 @@ async def manage_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     await query.edit_message_text(
-        f"⚙️ إدارة حساب: {username}",
+        f"⚙️ إدارة حساب: {username}\nالحالة: {status}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -368,7 +405,7 @@ async def toggle_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     
     db.toggle_account(user_id, username)
-    await manage_accounts(update, context)
+    await manage_account(update, context)
 
 # حذف الحساب
 async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -378,13 +415,17 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     
     db.delete_account(user_id, username)
-    await query.edit_message_text(f"✅ تم حذف حساب {username} بنجاح!", reply_markup=control_keyboard())
+    await query.edit_message_text(f"✅ تم حذف حساب {username} بنجاح!", reply_markup=main_keyboard())
 
-# إضافة حساب جديد
+# معالجة زر "إضافة حساب"
 async def add_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("📝 أرسل اسم مستخدم إنستجرام وكلمة المرور بهذا الشكل:\nusername:password")
+    await query.edit_message_text(
+        "📝 أرسل اسم مستخدم إنستجرام وكلمة المرور بهذا الشكل:\n\n`username:password`\n\nمثال:\n`my_instagram:my_password123`",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 إلغاء", callback_data='back_main')]])
+    )
     context.user_data['awaiting_credentials'] = True
 
 # معالجة بيانات الحساب
@@ -395,30 +436,34 @@ async def handle_credentials(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         text = update.message.text
         if ':' not in text:
-            await update.message.reply_text("⚠️ الرجاء استخدام الصيغة الصحيحة: username:password")
+            await update.message.reply_text(
+                "⚠️ الرجاء استخدام الصيغة الصحيحة: username:password",
+                reply_markup=main_keyboard()
+            )
+            context.user_data.pop('awaiting_credentials', None)
             return
             
         username, password = text.split(":", 1)
         user_id = update.effective_user.id
         
         if db.add_account(user_id, username.strip(), password.strip()):
-            await update.message.reply_text("✅ تم حفظ الحساب بنجاح!", reply_markup=control_keyboard())
+            await update.message.reply_text(
+                f"✅ تم حفظ حساب @{username} بنجاح!",
+                reply_markup=main_keyboard()
+            )
         else:
-            await update.message.reply_text("❌ فشل في حفظ الحساب", reply_markup=control_keyboard())
-        
-        context.user_data.pop('awaiting_credentials', None)
+            await update.message.reply_text(
+                "❌ فشل في حفظ الحساب",
+                reply_markup=main_keyboard()
+            )
     except Exception as e:
         logger.error(f"خطأ في حفظ بيانات الحساب: {e}")
-        await update.message.reply_text(f"⚠️ حدث خطأ: {str(e)}", reply_markup=control_keyboard())
-
-# العودة للقائمة الرئيسية
-async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "🏆 بوت النشر الآمن لإنستجرام\nاختر أحد الخيارات:",
-        reply_markup=control_keyboard()
-    )
+        await update.message.reply_text(
+            f"⚠️ حدث خطأ: {str(e)}",
+            reply_markup=main_keyboard()
+        )
+    finally:
+        context.user_data.pop('awaiting_credentials', None)
 
 # المساعدة
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -427,14 +472,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
     📚 دليل استخدام البوت:
     
-    1. أضف حساب إنستجرام: 
-       - اختر "إدارة الحسابات" → "إضافة حساب جديد"
+    1. إضافة حساب إنستجرام:
+       - اختر "إضافة حساب"
        - أرسل: username:password
+       مثال: my_account:my_password123
     
     2. تسجيل الدخول لحساب:
        - اختر "تسجيل الدخول"
        - اختر الحساب
-       - انتظر النتيجة
+       - انتظر نتيجة عملية تسجيل الدخول
     
     3. النشر على إنستجرام:
        - اختر "نشر الآن"
@@ -444,14 +490,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
        - تفعيل/تعطيل الحسابات
        - حذف الحسابات
     
-    ⚠️ ملاحظات:
+    ⚠️ ملاحظات هامة:
     - البوت يستخدم حساب تجريبي فقط
     - تجنب استخدام الحسابات الرئيسية
     - قد يؤدي الاستخدام المكثف إلى حظر الحساب
+    - تأكد من الاشتراك في القنوات المطلوبة
     """
     await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 العودة", callback_data='back')]
+        [InlineKeyboardButton("🔙 العودة", callback_data='back_main')]
     ]))
+
+# العودة للقائمة الرئيسية
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await start(update, context)
 
 # معالجة الأخطاء
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -459,9 +512,15 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     
     if isinstance(update, Update):
         if update.callback_query:
-            await update.callback_query.message.reply_text("⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا")
+            await update.callback_query.message.reply_text(
+                "⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا",
+                reply_markup=main_keyboard()
+            )
         elif update.message:
-            await update.message.reply_text("⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا")
+            await update.message.reply_text(
+                "⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا",
+                reply_markup=main_keyboard()
+            )
 
 def main():
     application = Application.builder().token(TOKEN).build()
@@ -479,7 +538,7 @@ def main():
     application.add_handler(CallbackQueryHandler(manage_account, pattern="^manage_"))
     application.add_handler(CallbackQueryHandler(toggle_account, pattern="^toggle_"))
     application.add_handler(CallbackQueryHandler(delete_account, pattern="^delete_"))
-    application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back$"))
+    application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_main$"))
     
     # معالجات الرسائل
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_credentials))
