@@ -62,6 +62,12 @@ class Database:
         cursor.execute("SELECT insta_username, insta_password FROM accounts WHERE user_id=? AND is_active=1", (user_id,))
         return cursor.fetchone()
     
+    def get_account_credentials(self, user_id, username):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT insta_username, insta_password FROM accounts WHERE user_id=? AND insta_username=?", 
+                      (user_id, username))
+        return cursor.fetchone()
+    
     def toggle_account(self, user_id, username):
         cursor = self.conn.cursor()
         cursor.execute("UPDATE accounts SET is_active = NOT is_active WHERE user_id=? AND insta_username=?", 
@@ -99,56 +105,71 @@ def setup_browser():
 # تسجيل الدخول إلى إنستجرام
 def insta_login(driver, username, password):
     from selenium.webdriver.common.by import By
-    driver.get("https://www.instagram.com/accounts/login/")
-    time.sleep(5)
-    driver.find_element(By.NAME, "username").send_keys(username)
-    driver.find_element(By.NAME, "password").send_keys(password)
-    driver.find_element(By.XPATH, "//button[@type='submit']").click()
-    time.sleep(7)
-    return "تم تسجيل الدخول بنجاح" if "instagram.com" in driver.current_url else "فشل تسجيل الدخول"
+    try:
+        driver.get("https://www.instagram.com/accounts/login/")
+        time.sleep(5)
+        driver.find_element(By.NAME, "username").send_keys(username)
+        driver.find_element(By.NAME, "password").send_keys(password)
+        driver.find_element(By.XPATH, "//button[@type='submit']").click()
+        time.sleep(7)
+        
+        # التحقق من نجاح تسجيل الدخول
+        if "instagram.com" in driver.current_url and "challenge" not in driver.current_url:
+            return "تم تسجيل الدخول بنجاح ✅"
+        elif "challenge" in driver.current_url:
+            return "يتطلب التحقق البشري ⚠️"
+        else:
+            return "فشل تسجيل الدخول ❌"
+    except Exception as e:
+        logger.error(f"خطأ في تسجيل الدخول: {str(e)}")
+        return f"حدث خطأ أثناء تسجيل الدخول: {str(e)}"
 
 # نشر على إنستجرام
 def insta_post(driver, image_path, caption=""):
     from selenium.webdriver.common.by import By
-    driver.get("https://www.instagram.com/")
-    time.sleep(5)
-    
-    # العثور على زر النشر
     try:
-        create_button = driver.find_element(By.XPATH, "//div[@role='button'][.//*[local-name()='svg' and @aria-label='New post']]")
-        create_button.click()
-    except:
+        driver.get("https://www.instagram.com/")
+        time.sleep(5)
+        
+        # العثور على زر النشر
         try:
-            create_button = driver.find_element(By.XPATH, "//span[text()='Create']")
+            create_button = driver.find_element(By.XPATH, "//div[@role='button'][.//*[local-name()='svg' and @aria-label='New post']]")
             create_button.click()
         except:
-            return False
-    
-    time.sleep(3)
-    
-    # رفع الصورة
-    upload_input = driver.find_element(By.XPATH, "//input[@type='file']")
-    upload_input.send_keys(os.path.abspath(image_path))
-    time.sleep(5)
-    
-    # التالي
-    next_buttons = driver.find_elements(By.XPATH, "//div[contains(text(), 'Next') or contains(text(), 'التالي')]")
-    if next_buttons:
-        next_buttons[0].click()
+            try:
+                create_button = driver.find_element(By.XPATH, "//span[text()='Create']")
+                create_button.click()
+            except:
+                return False
+        
         time.sleep(3)
-    
-    # إضافة وصف
-    caption_field = driver.find_element(By.XPATH, "//textarea[@aria-label='Write a caption...' or @aria-label='اكتب تعليقًا...']")
-    caption_field.send_keys(caption)
-    time.sleep(2)
-    
-    # النشر
-    share_buttons = driver.find_elements(By.XPATH, "//div[contains(text(), 'Share') or contains(text(), 'مشاركة')]")
-    if share_buttons:
-        share_buttons[0].click()
-        time.sleep(10)
-        return True
-    return False
+        
+        # رفع الصورة
+        upload_input = driver.find_element(By.XPATH, "//input[@type='file']")
+        upload_input.send_keys(os.path.abspath(image_path))
+        time.sleep(5)
+        
+        # التالي
+        next_buttons = driver.find_elements(By.XPATH, "//div[contains(text(), 'Next') or contains(text(), 'التالي')]")
+        if next_buttons:
+            next_buttons[0].click()
+            time.sleep(3)
+        
+        # إضافة وصف
+        caption_field = driver.find_element(By.XPATH, "//textarea[@aria-label='Write a caption...' or @aria-label='اكتب تعليقًا...']")
+        caption_field.send_keys(caption)
+        time.sleep(2)
+        
+        # النشر
+        share_buttons = driver.find_elements(By.XPATH, "//div[contains(text(), 'Share') or contains(text(), 'مشاركة')]")
+        if share_buttons:
+            share_buttons[0].click()
+            time.sleep(10)
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"خطأ في النشر: {str(e)}")
+        return False
 
 # التحقق من الاشتراك
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -163,12 +184,13 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return False
     return True
 
-# لوحة التحكم
+# لوحة التحكم الرئيسية
 def control_keyboard():
     keyboard = [
-        [InlineKeyboardButton("نشر الآن", callback_data='publish_now')],
-        [InlineKeyboardButton("إدارة الحسابات", callback_data='manage_accounts')],
-        [InlineKeyboardButton("مساعدة", callback_data='help')]
+        [InlineKeyboardButton("📤 نشر الآن", callback_data='publish_now')],
+        [InlineKeyboardButton("🔐 تسجيل الدخول", callback_data='login_account')],
+        [InlineKeyboardButton("👤 إدارة الحسابات", callback_data='manage_accounts')],
+        [InlineKeyboardButton("❓ مساعدة", callback_data='help')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -182,6 +204,64 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏆 بوت النشر الآمن لإنستجرام\nاختر أحد الخيارات:",
         reply_markup=control_keyboard()
     )
+
+# معالجة زر "تسجيل الدخول"
+async def login_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    # الحصول على الحسابات
+    accounts = db.get_accounts(user_id)
+    
+    if not accounts:
+        await query.edit_message_text("ليس لديك أي حسابات مسجلة")
+        return
+    
+    # إنشاء لوحة أزرار للحسابات
+    keyboard = []
+    for username, is_active in accounts:
+        status = "✅" if is_active else "❌"
+        keyboard.append([InlineKeyboardButton(f"{status} {username}", callback_data=f"login_{username}")])
+    
+    keyboard.append([InlineKeyboardButton("العودة", callback_data='back')])
+    
+    await query.edit_message_text(
+        "🔐 اختر حسابًا لتسجيل الدخول:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# معالجة تسجيل الدخول لحساب محدد
+async def handle_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    username = query.data.split("_", 1)[1]
+    user_id = query.from_user.id
+    
+    # الحصول على بيانات الحساب
+    account = db.get_account_credentials(user_id, username)
+    if not account:
+        await query.edit_message_text("❌ لم يتم العثور على بيانات الحساب")
+        return
+    
+    # إرسال رسالة انتظار
+    wait_msg = await query.edit_message_text(f"⏳ جاري تسجيل الدخول إلى حساب {username}...")
+    
+    try:
+        driver = setup_browser()
+        login_status = insta_login(driver, account[0], account[1])
+        driver.quit()
+        
+        await wait_msg.edit_text(
+            f"🔐 حالة تسجيل الدخول لحساب {username}:\n{login_status}",
+            reply_markup=control_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"خطأ في تسجيل الدخول: {str(e)}")
+        await wait_msg.edit_text(
+            f"❌ فشل تسجيل الدخول: {str(e)}",
+            reply_markup=control_keyboard()
+        )
 
 # معالجة زر "نشر الآن"
 async def publish_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,13 +300,13 @@ async def handle_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         driver = setup_browser()
         login_status = insta_login(driver, account[0], account[1])
         
-        if "نجاح" in login_status:
+        if "✅" in login_status:
             if insta_post(driver, image_path, caption):
                 await wait_msg.edit_text("✅ تم النشر بنجاح على إنستجرام!", reply_markup=control_keyboard())
             else:
                 await wait_msg.edit_text("❌ فشل في عملية النشر", reply_markup=control_keyboard())
         else:
-            await wait_msg.edit_text("❌ فشل تسجيل الدخول إلى إنستجرام", reply_markup=control_keyboard())
+            await wait_msg.edit_text(f"❌ {login_status}", reply_markup=control_keyboard())
         
         driver.quit()
     except Exception as e:
@@ -254,19 +334,57 @@ async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "✅ مفعل" if is_active else "❌ معطل"
         keyboard.append([InlineKeyboardButton(f"{username} - {status}", callback_data=f"manage_{username}")])
     
-    keyboard.append([InlineKeyboardButton("إضافة حساب جديد", callback_data='add_account')])
-    keyboard.append([InlineKeyboardButton("العودة", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("➕ إضافة حساب جديد", callback_data='add_account')])
+    keyboard.append([InlineKeyboardButton("🔙 العودة", callback_data='back')])
     
     await query.edit_message_text(
         "📝 حساباتك المسجلة:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+# إدارة حساب معين
+async def manage_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    username = query.data.split("_", 1)[1]
+    
+    keyboard = [
+        [InlineKeyboardButton("🔓 تسجيل الدخول", callback_data=f"login_{username}")],
+        [InlineKeyboardButton("🔄 تفعيل/تعطيل", callback_data=f"toggle_{username}")],
+        [InlineKeyboardButton("🗑️ حذف الحساب", callback_data=f"delete_{username}")],
+        [InlineKeyboardButton("🔙 العودة", callback_data='manage_accounts')]
+    ]
+    
+    await query.edit_message_text(
+        f"⚙️ إدارة حساب: {username}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# تفعيل/تعطيل الحساب
+async def toggle_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    username = query.data.split("_", 1)[1]
+    user_id = query.from_user.id
+    
+    db.toggle_account(user_id, username)
+    await manage_accounts(update, context)
+
+# حذف الحساب
+async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    username = query.data.split("_", 1)[1]
+    user_id = query.from_user.id
+    
+    db.delete_account(user_id, username)
+    await query.edit_message_text(f"✅ تم حذف حساب {username} بنجاح!", reply_markup=control_keyboard())
+
 # إضافة حساب جديد
 async def add_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("أرسل اسم مستخدم إنستجرام وكلمة المرور بهذا الشكل:\nusername:password")
+    await query.edit_message_text("📝 أرسل اسم مستخدم إنستجرام وكلمة المرور بهذا الشكل:\nusername:password")
     context.user_data['awaiting_credentials'] = True
 
 # معالجة بيانات الحساب
@@ -293,6 +411,48 @@ async def handle_credentials(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"خطأ في حفظ بيانات الحساب: {e}")
         await update.message.reply_text(f"⚠️ حدث خطأ: {str(e)}", reply_markup=control_keyboard())
 
+# العودة للقائمة الرئيسية
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🏆 بوت النشر الآمن لإنستجرام\nاختر أحد الخيارات:",
+        reply_markup=control_keyboard()
+    )
+
+# المساعدة
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    help_text = """
+    📚 دليل استخدام البوت:
+    
+    1. أضف حساب إنستجرام: 
+       - اختر "إدارة الحسابات" → "إضافة حساب جديد"
+       - أرسل: username:password
+    
+    2. تسجيل الدخول لحساب:
+       - اختر "تسجيل الدخول"
+       - اختر الحساب
+       - انتظر النتيجة
+    
+    3. النشر على إنستجرام:
+       - اختر "نشر الآن"
+       - أرسل الصورة مع التعليق (اختياري)
+    
+    4. إدارة الحسابات:
+       - تفعيل/تعطيل الحسابات
+       - حذف الحسابات
+    
+    ⚠️ ملاحظات:
+    - البوت يستخدم حساب تجريبي فقط
+    - تجنب استخدام الحسابات الرئيسية
+    - قد يؤدي الاستخدام المكثف إلى حظر الحساب
+    """
+    await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 العودة", callback_data='back')]
+    ]))
+
 # معالجة الأخطاء
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"حدث خطأ غير متوقع: {context.error}")
@@ -311,8 +471,15 @@ def main():
     
     # معالجات الأزرار
     application.add_handler(CallbackQueryHandler(publish_now, pattern="^publish_now$"))
+    application.add_handler(CallbackQueryHandler(login_account, pattern="^login_account$"))
     application.add_handler(CallbackQueryHandler(manage_accounts, pattern="^manage_accounts$"))
     application.add_handler(CallbackQueryHandler(add_account, pattern="^add_account$"))
+    application.add_handler(CallbackQueryHandler(help_command, pattern="^help$"))
+    application.add_handler(CallbackQueryHandler(handle_login, pattern="^login_"))
+    application.add_handler(CallbackQueryHandler(manage_account, pattern="^manage_"))
+    application.add_handler(CallbackQueryHandler(toggle_account, pattern="^toggle_"))
+    application.add_handler(CallbackQueryHandler(delete_account, pattern="^delete_"))
+    application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back$"))
     
     # معالجات الرسائل
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_credentials))
