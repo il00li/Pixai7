@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# إدارة قاعدة البيانات
+# إدارة قاعدة البيانات - الإصدار المصحح
 class Database:
     def __init__(self):
         self.conn = sqlite3.connect('instagram_bot.db', check_same_thread=False)
@@ -32,7 +32,7 @@ class Database:
     
     def create_tables(self):
         cursor = self.conn.cursor()
-        # تم إصلاح استعلام إنشاء الجدول
+        # الاستعلام المصحح - تم إصلاح مشكلة "incomplete input"
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS accounts (
                 user_id INTEGER,
@@ -40,7 +40,8 @@ class Database:
                 insta_password TEXT,
                 is_active INTEGER DEFAULT 0,
                 PRIMARY KEY (user_id, insta_username)
-            ''')
+            )
+        ''')
         self.conn.commit()
     
     def add_account(self, user_id, username, password):
