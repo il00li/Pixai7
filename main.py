@@ -1,498 +1,262 @@
 import asyncio
-import re
-import os
-import time
+import sqlite3
 from telethon import TelegramClient, events, Button
-from telethon.errors import (
-    SessionPasswordNeededError, 
-    PhoneCodeInvalidError, 
-    PhoneCodeExpiredError,
-    PhoneNumberInvalidError,
-    FloodWaitError
-)
-from telethon.tl.types import (
-    InputReportReasonSpam, 
-    InputReportReasonViolence, 
-    InputReportReasonPornography, 
-    InputReportReasonOther
-)
-from telethon.tl.functions.messages import ReportRequest
+from telethon.sessions import StringSession
+from telethon.tl.functions.messages import ImportChatInviteRequest
+import re
 
 # إعدادات البوت
 API_ID = 23656977
 API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
-BOT_TOKEN = '8312137482:AAEORpBnD8CmFfB39ayJT4UputPoSh_qCRw'
-ADMIN_ID = 7251748706
+BOT_TOKEN = '7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc'
 
-# حالات المحادثة
-PHONE, CODE, REPORT_TYPE, REPORT_LINK, REPORT_MESSAGE, CONFIRMATION = range(6)
+# تهيئة قاعدة البيانات
+conn = sqlite3.connect('bot_data.db')
+c = conn.cursor()
 
-# أنواع البلاغات
-REPORT_TYPES = {
-    "spam": ("بريد مزعج", InputReportReasonSpam()),
-    "violence": ("عنف", InputReportReasonViolence()),
-    "porn": ("إباحي", InputReportReasonPornography()),
-    "scam": ("احتيال", InputReportReasonOther()),
-    "hate": ("خطاب كراهية", InputReportReasonOther())
-}
+# إنشاء الجداول
+c.execute('''CREATE TABLE IF NOT EXISTS users
+             (user_id INTEGER PRIMARY KEY, phone TEXT, session TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS groups
+             (group_id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS stats
+             (user_id INTEGER PRIMARY KEY, publish_count INTEGER)''')
+conn.commit()
 
-# تخزين البيانات
-sessions = {}
-reports = {}
-user_states = {}
-pending_codes = {}
+# تهيئة العميل
+bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# إنشاء عميل البوت
-bot = TelegramClient('clean_environment_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# لوحة المفاتيح الرئيسية
+def main_keyboard():
+    return [
+        [Button.inline("════ LOGIN | تسجيل ════", b'login')],
+        [
+            Button.inline("بدء النشر", b'start_publishing'),
+            Button.inline("اضف سوبر", b'add_super')
+        ],
+        [
+            Button.inline("مساعدة", b'help'),
+            Button.inline("احصائيات", b'stats')
+        ]
+    ]
 
-# بدء المحادثة
+# لوحة فترات النشر
+def intervals_keyboard():
+    return [
+        [Button.inline("2 دقائق", b'interval_2')],
+        [Button.inline("5 دقائق", b'interval_5')],
+        [Button.inline("10 دقائق", b'interval_10')],
+        [Button.inline("20 دقيقة", b'interval_20')],
+        [Button.inline("30 دقيقة", b'interval_30')],
+        [Button.inline("60 دقيقة", b'interval_60')],
+        [Button.inline("120 دقيقة", b'interval_120')],
+        [Button.inline("رجوع", b'back_main')]
+    ]
+
+# لوحة الرجوع
+def back_keyboard():
+    return [[Button.inline("رجوع", b'back_main')]]
+
+# بدء البوت
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    user_id = event.sender_id
-    
-    # إعادة تعيين حالة المستخدم
-    user_states[user_id] = PHONE
-    
-    # إرسال رسالة البدء مع تعليمات واضحة
-    await event.respond(
-        "مرحباً بك في بوت البيئة النظيفة! 🌍\n"
-        "هذا البوت يساعدك في الإبلاغ عن المحتوى الضار لخلق بيئة تلجرام أنظف.\n\n"
-        "**الرجاء إرسال رقم هاتفك مع رمز الدولة:**\n"
-        "- يجب أن يبدأ الرقم بعلامة '+' ثم رمز الدولة ثم رقم الهاتف\n"
-        "- مثال صحيح: `+966501234567`\n"
-        "- مثال خاطئ: `00966501234567` أو `966501234567`\n\n"
-        "ملاحظة: سوف تتلقى كود تحقق على حساب التلجرام المرتبط بهذا الرقم."
+    await event.reply(
+        "مرحباً! أنا بوت النشر التلقائي في المجموعات",
+        buttons=main_keyboard()
     )
 
-# مساعدة
-@bot.on(events.NewMessage(pattern='/help'))
-async def help_command(event):
-    await event.respond(
-        "🆘 **دليل استخدام البوت:**\n\n"
-        "1. ابدأ الأمر بـ /start\n"
-        "2. أرسل رقم هاتفك الدولي (مع رمز الدولة وعلامة '+' في البداية)\n"
-        "3. ستصلك رسالة على التلجرام تحتوي على كود تحقق\n"
-        "4. أرسل الكود الذي استلمته إلى البوت\n"
-        "5. اختر نوع البلاغ من الأزرار\n"
-        "6. أرسل رابط المجموعة أو القناة أو الحساب\n"
-        "7. اكتب رسالة توضح المشكلة\n"
-        "8. تأكد من المعلومات وأرسل البلاغ\n\n"
-        "سيقوم البوت بعد ذلك بإرسال عدة بلاغات إلى إدارة تلجرام\n\n"
-        "للإيقاف: /stop\n"
-        "للمساعدة: /help\n\n"
-        "للإبلاغ عن مشكلة: راسل المطور @USERNAME"
-    )
-
-# معالجة رسائل المستخدم
-@bot.on(events.NewMessage)
-async def handle_message(event):
-    user_id = event.sender_id
-    state = user_states.get(user_id)
-    
-    # تجاهل الأوامر
-    if event.raw_text.startswith('/'):
-        return
-    
-    if state == PHONE:
-        await handle_phone(event)
-    elif state == CODE:
-        await handle_code(event)
-    elif state == REPORT_LINK:
-        await handle_report_link(event)
-    elif state == REPORT_MESSAGE:
-        await handle_report_message(event)
-
-# معالجة رقم الهاتف
-async def handle_phone(event):
-    user_id = event.sender_id
-    phone = event.raw_text.strip()
-    
-    # إذا كانت الرسالة فارغة
-    if not phone:
-        await event.respond("❌ لم تستلم أي رقم. الرجاء إرسال رقم الهاتف:")
-        return
-    
-    # تنظيف الرقم
-    phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-    
-    # محاولة تصحيح الأرقام
-    if phone.startswith("00"):
-        phone = "+" + phone[2:]
-    elif phone.startswith("0") and not phone.startswith("+"):
-        phone = "+" + phone
-    elif not phone.startswith("+"):
-        phone = "+" + phone
-    
-    # التحقق من صحة الرقم
-    if not re.match(r"^\+\d{10,15}$", phone):
-        await event.respond(
-            "❌ **رقم غير صحيح!**\n"
-            "الرجاء إدخال رقم هاتف صحيح مع رمز الدولة يبدأ بعلامة '+'.\n"
-            "أمثلة:\n"
-            "- `+966501234567`\n"
-            "- `+201012345678`\n"
-            "- `+971501234567`\n\n"
-            "الرجاء إعادة المحاولة:"
-        )
-        return
-    
-    # إنشاء جلسة جديدة للمستخدم
-    try:
-        client = TelegramClient(f'sessions/{user_id}', API_ID, API_HASH)
-        await client.connect()
-        
-        # إرسال كود التحقق
-        sent_code = await client.send_code_request(phone)
-        
-        # تخزين بيانات الجلسة
-        sessions[user_id] = {
-            'client': client,
-            'phone': phone,
-            'phone_code_hash': sent_code.phone_code_hash,
-            'created_at': time.time()
-        }
-        
-        user_states[user_id] = CODE
-        pending_codes[user_id] = sent_code
-        
-        # إرسال رسالة توضيحية للكود
-        await event.respond(
-            f"🔑 **تم إرسال كود التحقق إلى الرقم {phone}**\n\n"
-            "طريقة الاستلام:\n"
-            "1. إشعار في تطبيق Telegram\n"
-            "2. رسالة SMS (إذا لم يصل الإشعار)\n\n"
-            "الرجاء إدخال الكود المكون من 5-6 أرقام (مثل: 12345):"
-        )
-    except PhoneNumberInvalidError:
-        await event.respond("❌ رقم الهاتف غير صالح. الرجاء التحقق وإعادة الإدخال:")
-    except FloodWaitError as e:
-        await event.respond(f"⏳ تم تجاوز عدد المحاولات. الرجاء الانتظار {e.seconds} ثانية قبل المحاولة مرة أخرى.")
-    except Exception as e:
-        await event.respond(f"❌ حدث خطأ: {str(e)}\nالرجاء المحاولة مرة أخرى /start")
-        if user_id in user_states:
-            del user_states[user_id]
-
-# معالجة كود التحقق
-async def handle_code(event):
-    user_id = event.sender_id
-    code = event.raw_text.strip()
-    
-    if not code:
-        await event.respond("❌ لم تستلم أي كود. الرجاء إدخال الكود:")
-        return
-    
-    session = sessions.get(user_id)
-    if not session:
-        await event.respond("❌ انتهت الجلسة، يرجى البدء من جديد باستخدام /start")
-        return
-    
-    try:
-        # تسجيل الدخول باستخدام الكود
-        await session['client'].sign_in(
-            phone=session['phone'],
-            code=code,
-            phone_code_hash=session['phone_code_hash']
-        )
-        
-        # التحقق من نجاح تسجيل الدخول
-        me = await session['client'].get_me()
-        user_states[user_id] = REPORT_TYPE
-        
-        # بناء لوحة أزرار لأنواع البلاغات
-        buttons = [
-            [Button.inline(name, data=type_id)]
-            for type_id, (name, _) in REPORT_TYPES.items()
-        ]
-        
-        await event.respond(
-            f"✅ **تم التحقق بنجاح!** مرحباً {me.first_name}\n\n"
-            "الرجاء اختيار نوع البلاغ من الأزرار أدناه:",
-            buttons=buttons
-        )
-    except PhoneCodeInvalidError:
-        await event.respond("❌ كود التحقق غير صحيح! الرجاء المحاولة مرة أخرى:")
-    except PhoneCodeExpiredError:
-        # إذا انتهت صلاحية الكود، نرسل كود جديد
-        await event.respond("⌛️ كود التحقق منتهي الصلاحية. جاري إرسال كود جديد...")
-        try:
-            sent_code = await session['client'].send_code_request(session['phone'])
-            session['phone_code_hash'] = sent_code.phone_code_hash
-            session['created_at'] = time.time()
-            await event.respond("🔑 تم إرسال كود تحقق جديد. الرجاء إدخال الكود الجديد:")
-        except Exception as e:
-            await event.respond(f"❌ فشل في إرسال كود جديد: {str(e)}\nالرجاء البدء من جديد /start")
-            if user_id in user_states:
-                del user_states[user_id]
-    except SessionPasswordNeededError:
-        await event.respond("🔒 حسابك محمي بكلمة سر. الرجاء إرسال كلمة السر:")
-        user_states[user_id] = 'PASSWORD'
-    except Exception as e:
-        await event.respond(f"❌ حدث خطأ: {str(e)}\nالرجاء البدء من جديد /start")
-        if user_id in user_states:
-            del user_states[user_id]
-
-# معالجة كلمة السر
-@bot.on(events.NewMessage)
-async def handle_password(event):
-    user_id = event.sender_id
-    if user_states.get(user_id) != 'PASSWORD':
-        return
-    
-    password = event.raw_text
-    session = sessions.get(user_id)
-    if not session:
-        await event.respond("❌ انتهت الجلسة، يرجى البدء من جديد باستخدام /start")
-        return
-    
-    try:
-        await session['client'].sign_in(password=password)
-        me = await session['client'].get_me()
-        user_states[user_id] = REPORT_TYPE
-        
-        buttons = [
-            [Button.inline(name, data=type_id)]
-            for type_id, (name, _) in REPORT_TYPES.items()
-        ]
-        
-        await event.respond(
-            f"✅ **تم التحقق بنجاح!** مرحباً {me.first_name}\n\n"
-            "الرجاء اختيار نوع البلاغ من الأزرار أدناه:",
-            buttons=buttons
-        )
-    except Exception as e:
-        await event.respond(f"❌ خطأ في كلمة السر: {str(e)}\nالرجاء المحاولة مرة أخرى:")
-
-# معالجة نوع البلاغ
+# معالجة الضغط على الأزرار
 @bot.on(events.CallbackQuery)
-async def handle_report_type(event):
+async def callback_handler(event):
+    data = event.data.decode('utf-8')
     user_id = event.sender_id
-    report_type = event.data.decode('utf-8')
     
-    if report_type not in REPORT_TYPES:
-        await event.answer("اختيار غير صحيح!")
-        return
-    
-    user_states[user_id] = REPORT_LINK
-    await event.edit(
-        f"📌 **نوع البلاغ:** {REPORT_TYPES[report_type][0]}\n\n"
-        "الرجاء إرسال رابط المجموعة/القناة/الحساب المراد الإبلاغ عنه:\n"
-        "- مثال: https://t.me/group_name\n"
-        "- أو: @username"
-    )
-    sessions[user_id]['report_type'] = report_type
-
-# معالجة رابط البلاغ
-async def handle_report_link(event):
-    user_id = event.sender_id
-    link = event.raw_text.strip()
-    
-    if not link:
-        await event.respond("❌ لم تستلم أي رابط. الرجاء إرسال الرابط:")
-        return
-    
-    # تنظيف الرابط
-    if link.startswith("https://"):
-        link = link
-    elif link.startswith("@"):
-        link = link[1:]
+    if data == 'login':
+        await login(event)
+    elif data == 'add_super':
+        await add_super(event)
+    elif data == 'start_publishing':
+        await show_intervals(event)
+    elif data == 'help':
+        await show_help(event)
+    elif data == 'stats':
+        await show_stats(event)
+    elif data == 'back_main':
+        await back_to_main(event)
+    elif data.startswith('interval_'):
+        await start_publishing(event, data)
     else:
-        link = link
+        await event.answer("خيار غير معروف!")
+
+# عملية تسجيل الدخول
+async def login(event):
+    await event.edit(
+        "أرسل رقم هاتفك مع رمز الدولة (مثال: +20123456789)",
+        buttons=back_keyboard()
+    )
     
-    # التحقق من صحة الرابط
-    if not re.match(r"^(https?://t\.me/[\w]{5,32}|[\w]{5,32})$", link):
-        await event.respond(
-            "❌ **رابط غير صحيح!**\n"
-            "الرجاء إرسال رابط صحيح مثل:\n"
-            "- https://t.me/group_name\n"
-            "- @username\n\n"
-            "الرجاء إعادة المحاولة:"
+    try:
+        phone_msg = await bot.wait_event(
+            events.NewMessage(from_id=event.sender_id),
+            timeout=60
         )
-        return
-    
-    # إذا كان الرابط بدون https نضيفه
-    if not link.startswith("http"):
-        link = "https://t.me/" + link
-    
-    sessions[user_id]['report_link'] = link
-    user_states[user_id] = REPORT_MESSAGE
-    await event.respond(
-        "✍️ **تفاصيل البلاغ:**\n"
-        "الرجاء كتابة وصف للمشكلة (مثال: المجموعة تنشر محتوى غير لائق...):"
-    )
-
-# معالجة تفاصيل البلاغ
-async def handle_report_message(event):
-    user_id = event.sender_id
-    report_message = event.raw_text
-    
-    if not report_message:
-        await event.respond("❌ لم تستلم أي تفاصيل. الرجاء إرسال تفاصيل البلاغ:")
-        return
-    
-    sessions[user_id]['report_message'] = report_message
-    user_states[user_id] = CONFIRMATION
-    
-    report_type = sessions[user_id]['report_type']
-    report_details = (
-        f"📝 **تفاصيل البلاغ:**\n"
-        f"- النوع: {REPORT_TYPES[report_type][0]}\n"
-        f"- الرابط: {sessions[user_id]['report_link']}\n"
-        f"- التفاصيل: {report_message}"
-    )
-    
-    buttons = [
-        [Button.inline("✅ تأكيد الإرسال", data="confirm_send")],
-        [Button.inline("❌ إلغاء", data="cancel")]
-    ]
-    
-    await event.respond(
-        report_details + "\n\n"
-        "**الرجاء التأكيد قبل الإرسال:**",
-        buttons=buttons
-    )
-
-# معالجة تأكيد الإرسال
-@bot.on(events.CallbackQuery)
-async def handle_confirmation(event):
-    user_id = event.sender_id
-    choice = event.data.decode('utf-8')
-    
-    if choice == "confirm_send":
-        if user_id not in sessions:
-            await event.answer("❌ انتهت الجلسة، يرجى البدء من جديد")
+        phone = phone_msg.text
+        
+        if not re.match(r'^\+\d{10,15}$', phone):
+            await event.reply("رقم غير صحيح! أعد المحاولة")
             return
         
-        # تخزين البلاغ
-        report_data = sessions[user_id]
-        reports[user_id] = {
-            'type': report_data['report_type'],
-            'link': report_data['report_link'],
-            'message': report_data['report_message'],
-            'count': 1,
-            'client': report_data['client']
-        }
+        # حفظ رقم الهاتف مؤقتاً
+        c.execute("INSERT OR REPLACE INTO users (user_id, phone) VALUES (?, ?)", 
+                 (event.sender_id, phone))
+        conn.commit()
         
-        await event.edit(
-            "⏳ **جاري بدء عملية الإبلاغ...**\n\n"
-            "سأقوم بإرسال البلاغات بشكل متكرر حتى يتم حظر المحتوى الضار.\n"
-            "قد تستغرق العملية بضع دقائق.\n\n"
-            "يمكنك إيقاف العملية بأي وقت باستخدام /stop"
+        # إنشاء جلسة جديدة
+        client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await client.connect()
+        
+        # إرسال الرمز
+        await client.send_code_request(phone)
+        await event.reply("تم إرسال رمز التحقق. أرسل الرمز الآن (5 أرقام)")
+        
+        # استقبال الرمز
+        code_msg = await bot.wait_event(
+            events.NewMessage(from_id=event.sender_id),
+            timeout=120
         )
+        code = code_msg.text
         
-        # بدء عملية الإبلاغ المتكرر
-        asyncio.create_task(send_reports(user_id))
-    elif choice == "cancel":
-        await event.edit("❌ تم إلغاء عملية الإبلاغ.")
-        if user_id in sessions:
-            await sessions[user_id]['client'].disconnect()
-            del sessions[user_id]
-        if user_id in user_states:
-            del user_states[user_id]
+        # تسجيل الدخول
+        await client.sign_in(phone, code)
+        session_str = client.session.save()
+        
+        # حفظ الجلسة
+        c.execute("UPDATE users SET session = ? WHERE user_id = ?", 
+                 (session_str, event.sender_id))
+        conn.commit()
+        
+        await event.reply("✅ تم تسجيل الدخول بنجاح!", buttons=main_keyboard())
+        
+    except asyncio.TimeoutError:
+        await event.reply("انتهى الوقت! أعد المحاولة", buttons=main_keyboard())
 
-# إرسال البلاغات بشكل متكرر
-async def send_reports(user_id):
-    if user_id not in reports:
-        return
-    
-    report = reports[user_id]
-    client = report['client']
+# إضافة مجموعات سوبر
+async def add_super(event):
+    await event.edit(
+        "أرسل رابط الدعوة للمجموعة (يجب أن تكون رابط دعوة صالح)",
+        buttons=back_keyboard()
+    )
     
     try:
-        # الحصول على الكيان من الرابط
-        entity = await client.get_entity(report['link'])
-        
-        # إرسال البلاغ - التصحيح هنا
-        reason = REPORT_TYPES[report['type']][1]
-        await client(ReportRequest(
-            peer=entity,
-            id=[],  # قائمة فارغة للإبلاغ عن الكيان ككل
-            reason=reason,
-            message=report['message']
-        ))
-        
-        # إعلام المستخدم
-        await bot.send_message(
-            user_id,
-            f"🚀 **تم إرسال البلاغ #{report['count']} إلى إدارة تلجرام**"
+        group_msg = await bot.wait_event(
+            events.NewMessage(from_id=event.sender_id),
+            timeout=60
         )
+        invite_link = group_msg.text
         
-        # زيادة العداد
-        report['count'] += 1
+        # استخراج الهاش من الرابط
+        hash_match = re.search(r'\+(\w+)', invite_link)
+        if not hash_match:
+            await event.reply("رابط غير صالح!")
+            return
         
-        # الاستمرار في الإرسال حتى 10 بلاغات
-        if report['count'] <= 10:
-            await asyncio.sleep(10)  # انتظار 10 ثواني
-            await send_reports(user_id)
-        else:
-            await bot.send_message(
-                user_id,
-                "✅ **تم إكمال عملية الإبلاغ!**\n"
-                "تم إرسال 10 بلاغات إلى إدارة تلجرام.\n"
-                "شكراً لمساهمتك في جعل تلجرام أنظف."
-            )
-            # تنظيف الموارد
-            await client.disconnect()
-            if user_id in sessions: del sessions[user_id]
-            if user_id in user_states: del user_states[user_id]
-            if user_id in reports: del reports[user_id]
-            
+        invite_hash = hash_match.group(1)
+        
+        # الانضمام للمجموعة
+        client = await get_user_client(event.sender_id)
+        result = await client(ImportChatInviteRequest(invite_hash))
+        
+        # حفظ المجموعة
+        c.execute("INSERT OR IGNORE INTO groups (group_id, user_id, title) VALUES (?, ?, ?)",
+                 (result.chats[0].id, event.sender_id, result.chats[0].title))
+        conn.commit()
+        
+        await event.reply(f"✅ تم إضافة المجموعة: {result.chats[0].title}", buttons=main_keyboard())
+        
     except Exception as e:
-        await bot.send_message(
-            user_id,
-            f"❌ **فشل في الإبلاغ:** {str(e)}\n"
-            "تم إيقاف عملية الإبلاغ."
-        )
-        # تنظيف الموارد في حالة الخطأ
-        if user_id in reports: del reports[user_id]
-        if user_id in sessions:
-            try:
-                await sessions[user_id]['client'].disconnect()
-            except:
-                pass
-            del sessions[user_id]
-        if user_id in user_states: del user_states[user_id]
+        await event.reply(f"خطأ: {str(e)}", buttons=main_keyboard())
 
-# معالجة أمر الإيقاف
-@bot.on(events.NewMessage(pattern='/stop'))
-async def stop_reporting(event):
+# بدء النشر الدوري
+async def start_publishing(event, interval_data):
+    minutes = int(interval_data.split('_')[1])
     user_id = event.sender_id
-    if user_id in reports:
-        # إيقاف عملية الإبلاغ
-        await reports[user_id]['client'].disconnect()
-        del reports[user_id]
-        
-        if user_id in sessions: del sessions[user_id]
-        if user_id in user_states: del user_states[user_id]
-        
-        await event.respond("⏹️ **تم إيقاف عملية الإبلاغ بنجاح!**")
-    else:
-        await event.respond("⚠️ **لا توجد عملية إبلاغ جارية.**")
+    
+    await event.edit(
+        f"⏱ سيبدأ النشر كل {minutes} دقيقة",
+        buttons=back_keyboard()
+    )
+    
+    # هنا يمكنك إضافة وظيفة النشر الفعلية
+    # مثال: 
+    # while True:
+    #     await publish_to_groups(user_id)
+    #     await asyncio.sleep(minutes * 60)
 
-# وظيفة لتنظيف الجلسات القديمة
-async def clean_old_sessions():
-    while True:
-        await asyncio.sleep(60)  # تنظيف كل دقيقة
-        current_time = time.time()
-        for user_id, session_data in list(sessions.items()):
-            # إذا مرت أكثر من 10 دقائق دون تفعيل
-            if current_time - session_data.get('created_at', 0) > 600:
-                try:
-                    await session_data['client'].disconnect()
-                except:
-                    pass
-                if user_id in sessions: del sessions[user_id]
-                if user_id in user_states: del user_states[user_id]
-                if user_id in reports: del reports[user_id]
+# عرض الإحصائيات
+async def show_stats(event):
+    user_id = event.sender_id
+    
+    # مجموع المستخدمين
+    c.execute("SELECT COUNT(*) FROM users")
+    total_users = c.fetchone()[0]
+    
+    # مجموع المجموعات
+    c.execute("SELECT COUNT(*) FROM groups")
+    total_groups = c.fetchone()[0]
+    
+    # إحصائيات المستخدم
+    c.execute("SELECT publish_count FROM stats WHERE user_id = ?", (user_id,))
+    user_stats = c.fetchone()
+    user_count = user_stats[0] if user_stats else 0
+    
+    message = (
+        f"📊 إحصائيات البوت:\n\n"
+        f"• عدد المستخدمين: {total_users}\n"
+        f"• عدد المجموعات: {total_groups}\n"
+        f"• عدد نشراتك: {user_count}\n\n"
+        f"المطور: @Ili8_8ill"
+    )
+    
+    await event.edit(message, buttons=back_keyboard())
 
-# تشغيل البوت
+# عرض المساعدة
+async def show_help(event):
+    help_text = (
+        "⚙️ طريقة الاستخدام:\n\n"
+        "1. اضغط على 'تسجيل' لإضافة حسابك\n"
+        "2. استخدم 'اضف سوبر' لإضافة مجموعاتك\n"
+        "3. اختر 'بدء النشر' لتحديد الفترة\n\n"
+        "⚠️ تحذيرات:\n"
+        "- لا تشارك رمز التحقق مع أحد\n"
+        "- تأكد من صلاحية روابط الدعوة\n"
+        "- البوت لا يخزن بياناتك الشخصية\n\n"
+        "المطور: @Ili8_8ill"
+    )
+    await event.edit(help_text, buttons=back_keyboard())
+
+# وظائف مساعدة
+async def get_user_client(user_id):
+    c.execute("SELECT session FROM users WHERE user_id = ?", (user_id,))
+    session_str = c.fetchone()
+    if not session_str:
+        return None
+    
+    client = TelegramClient(StringSession(session_str[0]), API_ID, API_HASH)
+    await client.connect()
+    return client
+
+async def show_intervals(event):
+    await event.edit(
+        "اختر الفترة بين النشرات:",
+        buttons=intervals_keyboard()
+    )
+
+async def back_to_main(event):
+    await event.edit(
+        "القائمة الرئيسية:",
+        buttons=main_keyboard()
+    )
+
 if __name__ == '__main__':
-    # إنشاء مجلد الجلسات إذا لم يكن موجوداً
-    if not os.path.exists('sessions'):
-        os.makedirs('sessions')
-    
-    print("جارٍ تشغيل البوت...")
-    
-    # بدء مهمة تنظيف الجلسات
-    bot.loop.create_task(clean_old_sessions())
-    
+    print("Bot is running...")
     bot.run_until_disconnected()
