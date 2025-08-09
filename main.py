@@ -9,7 +9,7 @@ from telethon.errors import SessionPasswordNeededError, PhoneNumberInvalidError,
 # إعدادات البوت
 API_ID = 23656977
 API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
-BOT_TOKEN = '7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc'
+BOT_TOKEN = '8367105383:AAGFSjAz1sTLhv_xHosN8FPk5xEX7_T3wrg'
 
 # تهيئة قاعدة البيانات
 conn = sqlite3.connect('bot_data.db', check_same_thread=False)
@@ -339,3 +339,4 @@ async def back_to_main(event):
 if __name__ == '__main__':
     print("Bot is running...")
     bot.run_until_disconnected()
+
