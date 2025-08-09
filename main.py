@@ -9,7 +9,7 @@ from telethon.errors import SessionPasswordNeededError, PhoneNumberInvalidError,
 # إعدادات البوت
 API_ID = 23656977
 API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
-BOT_TOKEN = '8367105383:AAGFSjAz1sTLhv_xHosN8FPk5xEX7_T3wrg'
+BOT_TOKEN = '7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc'
 
 # تهيئة قاعدة البيانات
 conn = sqlite3.connect('bot_data.db', check_same_thread=False)
@@ -89,7 +89,7 @@ async def callback_handler(event):
     else:
         await event.answer("خيار غير معروف!")
 
-# عملية تسجيل الدخول (محدثة)
+# عملية تسجيل الدخول (الحل النهائي)
 async def login(event):
     # إعادة تعيين حالة المستخدم
     c.execute("UPDATE users SET session = NULL WHERE user_id = ?", (event.sender_id,))
@@ -101,13 +101,11 @@ async def login(event):
     )
     
     try:
-        # استقبال رقم الهاتف
-        phone_msg_event = await bot.wait_for(
-            events.NewMessage(from_id=event.sender_id),
-            timeout=300
-        )
-        phone = phone_msg_event.message.text.strip()
-        
+        # استقبال رقم الهاتف باستخدام طريقة موثوقة
+        phone = await wait_for_user_response(event.client, event.sender_id, 300)
+        if not phone:
+            return
+            
         if not re.match(r'^\+\d{10,15}$', phone):
             await event.respond("❌ رقم غير صحيح! أعد المحاولة", buttons=back_keyboard())
             return
@@ -121,9 +119,9 @@ async def login(event):
         client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
         
-        # إرسال رمز التحقق (مع معالجة الأخطاء)
+        # إرسال رمز التحقق
         try:
-            sent_code = await client.send_code_request(phone)
+            await client.send_code_request(phone)
             await event.respond(
                 f"✅ تم إرسال رمز التحقق إلى {phone}\n"
                 "🔢 أرسل الرمز الآن (5 أرقام)\n"
@@ -144,53 +142,48 @@ async def login(event):
             return
         
         # استقبال رمز التحقق
+        code = await wait_for_user_response(event.client, event.sender_id, 300)
+        if not code:
+            return
+            
+        code = code.strip().replace(' ', '')
+        
+        if not code.isdigit() or len(code) != 5:
+            await event.respond("❌ رمز غير صحيح! يجب أن يكون 5 أرقام", buttons=back_keyboard())
+            return
+        
+        # تسجيل الدخول بالرمز
         try:
-            code_msg_event = await bot.wait_for(
-                events.NewMessage(from_id=event.sender_id),
-                timeout=300
-            )
-            code = code_msg_event.message.text.strip().replace(' ', '')
+            await client.sign_in(phone, code=code)
+        except SessionPasswordNeededError:
+            await event.respond("🔒 الحساب محمي بكلمة مرور، أرسل كلمة المرور الآن:")
             
-            if not code.isdigit() or len(code) != 5:
-                await event.respond("❌ رمز غير صحيح! يجب أن يكون 5 أرقام", buttons=back_keyboard())
+            # استقبال كلمة المرور
+            password = await wait_for_user_response(event.client, event.sender_id, 120)
+            if not password:
                 return
-            
-            # تسجيل الدخول بالرمز
-            try:
-                await client.sign_in(phone, code=code)
-            except SessionPasswordNeededError:
-                await event.respond("🔒 الحساب محمي بكلمة مرور، أرسل كلمة المرور الآن:")
                 
-                # استقبال كلمة المرور
-                password_msg_event = await bot.wait_for(
-                    events.NewMessage(from_id=event.sender_id),
-                    timeout=120
-                )
-                password = password_msg_event.message.text
-                await client.sign_in(password=password)
-            
-            # حفظ الجلسة
-            session_str = client.session.save()
-            c.execute("UPDATE users SET session = ? WHERE user_id = ?", 
-                     (session_str, event.sender_id))
-            conn.commit()
-            
-            # التحقق من تسجيل الدخول
-            me = await client.get_me()
-            await event.respond(
-                f"✅ تم تسجيل الدخول بنجاح باسم: {me.first_name}",
-                buttons=main_keyboard()
-            )
-            
-        except asyncio.TimeoutError:
-            await event.respond("❌ انتهى الوقت! أعد العملية من البداية", buttons=main_keyboard())
+            await client.sign_in(password=password)
+        
+        # حفظ الجلسة
+        session_str = client.session.save()
+        c.execute("UPDATE users SET session = ? WHERE user_id = ?", 
+                 (session_str, event.sender_id))
+        conn.commit()
+        
+        # التحقق من تسجيل الدخول
+        me = await client.get_me()
+        await event.respond(
+            f"✅ تم تسجيل الدخول بنجاح باسم: {me.first_name}",
+            buttons=main_keyboard()
+        )
     
     except asyncio.TimeoutError:
         await event.respond("❌ انتهى الوقت! أعد العملية من البداية", buttons=main_keyboard())
     except Exception as e:
         await event.respond(f"❌ خطأ غير متوقع: {str(e)}", buttons=main_keyboard())
 
-# إضافة مجموعات سوبر (محدثة)
+# إضافة مجموعات سوبر (الحل النهائي)
 async def add_super(event):
     await event.edit(
         "🔗 أرسل رابط الدعوة للمجموعة (يجب أن تكون رابط دعوة صالح)",
@@ -198,11 +191,11 @@ async def add_super(event):
     )
     
     try:
-        group_msg_event = await bot.wait_for(
-            events.NewMessage(from_id=event.sender_id),
-            timeout=120
-        )
-        invite_link = group_msg_event.message.text.strip()
+        invite_link = await wait_for_user_response(event.client, event.sender_id, 120)
+        if not invite_link:
+            return
+            
+        invite_link = invite_link.strip()
         
         # استخراج الهاش من الرابط
         hash_match = re.search(r'\+(\w+)', invite_link) or re.search(r't.me/joinchat/(\w+)', invite_link)
@@ -237,7 +230,7 @@ async def add_super(event):
     except asyncio.TimeoutError:
         await event.respond("❌ انتهى الوقت! أعد المحاولة", buttons=main_keyboard())
 
-# بدء النشر الدوري (محدث)
+# بدء النشر الدوري
 async def start_publishing(event, interval_data):
     minutes = int(interval_data.split('_')[1])
     user_id = event.sender_id
@@ -262,7 +255,7 @@ async def start_publishing(event, interval_data):
     await asyncio.sleep(2)
     await event.respond(f"✅ تم بدء النشر بنجاح بفاصل {minutes} دقيقة", buttons=main_keyboard())
 
-# عرض الإحصائيات (محدث)
+# عرض الإحصائيات
 async def show_stats(event):
     user_id = event.sender_id
     
@@ -289,7 +282,7 @@ async def show_stats(event):
     
     await event.edit(message, buttons=back_keyboard())
 
-# عرض المساعدة (محدث)
+# عرض المساعدة
 async def show_help(event):
     help_text = (
         "⚙️ طريقة الاستخدام:\n\n"
@@ -336,7 +329,28 @@ async def back_to_main(event):
         buttons=main_keyboard()
     )
 
+# دالة جديدة لانتظار رد المستخدم (الحل النهائي)
+async def wait_for_user_response(client, user_id, timeout):
+    try:
+        # استخدام حلقة انتظار فعالة
+        future = asyncio.Future()
+        
+        @client.on(events.NewMessage(from_id=user_id))
+        async def handler(msg_event):
+            if not future.done():
+                future.set_result(msg_event.text)
+                client.remove_event_handler(handler)
+        
+        # انتظار النتيجة مع مهلة زمنية
+        return await asyncio.wait_for(future, timeout=timeout)
+    
+    except asyncio.TimeoutError:
+        await client.send_message(user_id, "❌ انتهى الوقت! أعد المحاولة")
+        return None
+    except Exception as e:
+        await client.send_message(user_id, f"❌ خطأ غير متوقع: {str(e)}")
+        return None
+
 if __name__ == '__main__':
     print("Bot is running...")
     bot.run_until_disconnected()
-
