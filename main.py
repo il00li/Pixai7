@@ -1,3 +1,17 @@
+import sys
+import pysqlite3
+
+# حل مشكلة sqlite3
+sys.modules['sqlite3'] = pysqlite3
+
+# حل نهائي لمشكلة imghdr (بدون Pillow)
+class DummyImghdr:
+    @staticmethod
+    def test(*args, **kwargs):
+        return None
+sys.modules['imghdr'] = DummyImghdr()
+
+# استيراد بقية المكتبات
 import asyncio
 import re
 import os
@@ -85,6 +99,13 @@ def init_db():
 
 # إنشاء عميل البوت
 bot = TelegramClient('publishing_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+
+# تهيئة قاعدة البيانات
+init_db()
+
+# تخزين الحالات والجلسات المؤقتة
+user_states = {}
+sessions = {}
 
 # القائمة الرئيسية
 async def main_menu(event, message=None):
@@ -304,11 +325,9 @@ async def auto_publish(user_id, interval):
                 for group in groups:
                     try:
                         entity = await client.get_entity(group[0])
-                        await client.send_message(
-                            entity, 
-                            "📢 هذا منشور تلقائي من البوت\n"
-                            "نتمنى لكم يوماً سعيداً! 🌟"
-                        )
+                        # رسالة النشر (نصية فقط)
+                        message = "📢 هذا منشور تلقائي من البوت\nنتمنى لكم يوماً سعيداً! 🌟"
+                        await client.send_message(entity, message)
                         
                         # تحديث الإحصائيات
                         cursor.execute("""
@@ -555,15 +574,10 @@ async def handle_password(event):
             buttons=[[Button.inline("رجوع", data="back")]]
         )
 
-# تهيئة البيانات
-init_db()
-user_states = {}
-sessions = {}
-
 # تشغيل البوت
 if __name__ == '__main__':
     # إنشاء مجلد الجلسات
     os.makedirs('sessions', exist_ok=True)
     
     print("جارٍ تشغيل بوت النشر التلقائي...")
-    bot.run_until_disconnected() 
+    bot.run_until_disconnected()
