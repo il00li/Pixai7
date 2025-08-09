@@ -1,19 +1,17 @@
 import telebot
+import requests
+import json
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, request
 import threading
 import time
-import groq
 
 # تكوين التوكنات والمفاتيح
 TOKEN = "8299954739:AAHlkfRH4N0cDjv-IToJkXQwwIqYCtzcVCQ"
-GROQ_API_KEY = "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"  # استبدل بمفتاح Groq الخاص بك
 ADMIN_ID = 7251748706
-MANDATORY_CHANNELS = ["@crazys7", "@AWU87"]  # القنوات الإجبارية
+MANDATORY_CHANNELS = ["@crazys7", "@AWU87"]
 WEBHOOK_URL = "https://pixai7.onrender.com/" + TOKEN
-
-# إنشاء عميل Groq
-client = groq.Groq(api_key=GROQ_API_KEY)
+GROQ_API_KEY = "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"  # استبدل بمفتاح Groq الخاص بك
 
 # إنشاء البوت
 bot = telebot.TeleBot(TOKEN)
@@ -25,9 +23,8 @@ subscribed_users = set()
 # وظيفة للحفاظ على تشغيل الخادم
 def keep_alive():
     while True:
-        time.sleep(300)  # إرسال طلب كل 5 دقائق
+        time.sleep(300)
         try:
-            import requests
             requests.get(WEBHOOK_URL)
         except: 
             pass
@@ -41,7 +38,7 @@ def check_subscription(user_id):
                 return False
         return True
     except Exception as e:
-        print(f"Error checking subscription: {e}")
+        print(f"خطأ في التحقق من الاشتراك: {e}")
         return False
 
 # إنشاء لوحة مفاتيح للاشتراك الإجباري
@@ -52,6 +49,41 @@ def subscription_keyboard():
     markup.add(InlineKeyboardButton("✅ تأكيد الاشتراك", callback_data="check_subscription"))
     return markup
 
+# وظيفة الذكاء الاصطناعي باستخدام Llama 3
+def get_ai_response(prompt):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "messages": [
+            {"role": "system", "content": "أنت مساعد ذكي يتحدث العربية بطلاقة."},
+            {"role": "user", "content": prompt}
+        ],
+        "model": "llama3-70b-8192",
+        "temperature": 0.7,
+        "max_tokens": 2000,
+        "top_p": 1,
+        "stream": False
+    }
+    
+    try:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            return f"❌ خطأ في API: {response.status_code} - {response.text}"
+            
+    except Exception as e:
+        return f"❌ خطأ في الاتصال: {str(e)}"
+
 # معالجة أمر /start
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -59,7 +91,7 @@ def start_command(message):
     if check_subscription(user_id):
         bot.reply_to(message, "مرحباً! أنا بوت الذكاء الاصطناعي المشابه لـ ChatGPT.\nاطرح علي أي سؤال وسأجيبك بذكاء!")
         subscribed_users.add(user_id)
-        bot.send_message(ADMIN_ID, f"✅ مستخدم جديد انضم:\nID: {user_id}\nUsername: @{message.from_user.username}")
+        bot.send_message(ADMIN_ID, f"✅ مستخدم جديد انضم:\nID: {user_id}\nالمستخدم: @{message.from_user.username}")
     else:
         bot.send_message(
             message.chat.id,
@@ -78,7 +110,7 @@ def check_subscription_callback(call):
             text="✅ تم التأكيد! يمكنك الآن استخدام البوت."
         )
         subscribed_users.add(user_id)
-        bot.send_message(ADMIN_ID, f"✅ مستخدم جديد أكد الاشتراك:\nID: {user_id}\nUsername: @{call.from_user.username}")
+        bot.send_message(ADMIN_ID, f"✅ مستخدم جديد أكد الاشتراك:\nID: {user_id}\nالمستخدم: @{call.from_user.username}")
     else:
         bot.answer_callback_query(call.id, "❌ لم تشترك في جميع القنوات المطلوبة!", show_alert=True)
 
@@ -102,26 +134,9 @@ def handle_message(message):
     # إظهار أن البوت يكتب
     bot.send_chat_action(message.chat.id, 'typing')
     
-    # توليد الرد باستخدام Groq (Llama 3)
-    try:
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": message.text,
-                }
-            ],
-            model="llama3-70b-8192",  # يمكن تغيير النموذج إذا لزم الأمر
-            temperature=0.7,
-            max_tokens=4096,
-            top_p=1,
-            stop=None,
-            stream=False,
-        )
-        response = chat_completion.choices[0].message.content
-        bot.reply_to(message, response)
-    except Exception as e:
-        bot.reply_to(message, f"❌ حدث خطأ في الذكاء الاصطناعي: {str(e)}")
+    # الحصول على الرد من الذكاء الاصطناعي
+    response = get_ai_response(message.text)
+    bot.reply_to(message, response)
 
 # تهيئة ويب هووك
 @app.route('/' + TOKEN, methods=['POST'])
@@ -135,7 +150,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return 'Bot is running!', 200
+    return '🤖 البوت يعمل بنجاح!', 200
 
 # تشغيل البوت
 if __name__ == '__main__':
