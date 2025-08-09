@@ -102,11 +102,11 @@ async def login(event):
     
     try:
         # استقبال رقم الهاتف
-        phone_msg = await bot.wait_event(
+        phone_msg_event = await bot.wait_for(
             events.NewMessage(from_id=event.sender_id),
             timeout=300
         )
-        phone = phone_msg.text.strip()
+        phone = phone_msg_event.message.text.strip()
         
         if not re.match(r'^\+\d{10,15}$', phone):
             await event.respond("❌ رقم غير صحيح! أعد المحاولة", buttons=back_keyboard())
@@ -145,11 +145,11 @@ async def login(event):
         
         # استقبال رمز التحقق
         try:
-            code_msg = await bot.wait_event(
+            code_msg_event = await bot.wait_for(
                 events.NewMessage(from_id=event.sender_id),
                 timeout=300
             )
-            code = code_msg.text.strip().replace(' ', '')
+            code = code_msg_event.message.text.strip().replace(' ', '')
             
             if not code.isdigit() or len(code) != 5:
                 await event.respond("❌ رمز غير صحيح! يجب أن يكون 5 أرقام", buttons=back_keyboard())
@@ -162,11 +162,11 @@ async def login(event):
                 await event.respond("🔒 الحساب محمي بكلمة مرور، أرسل كلمة المرور الآن:")
                 
                 # استقبال كلمة المرور
-                password_msg = await bot.wait_event(
+                password_msg_event = await bot.wait_for(
                     events.NewMessage(from_id=event.sender_id),
                     timeout=120
                 )
-                password = password_msg.text
+                password = password_msg_event.message.text
                 await client.sign_in(password=password)
             
             # حفظ الجلسة
@@ -198,11 +198,11 @@ async def add_super(event):
     )
     
     try:
-        group_msg = await bot.wait_event(
+        group_msg_event = await bot.wait_for(
             events.NewMessage(from_id=event.sender_id),
             timeout=120
         )
-        invite_link = group_msg.text.strip()
+        invite_link = group_msg_event.message.text.strip()
         
         # استخراج الهاش من الرابط
         hash_match = re.search(r'\+(\w+)', invite_link) or re.search(r't.me/joinchat/(\w+)', invite_link)
