@@ -1,322 +1,461 @@
 import asyncio
-import sqlite3
 import re
+import os
+import time
+import sqlite3
+from datetime import datetime
 from telethon import TelegramClient, events, Button
-from telethon.sessions import StringSession
-from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.errors import SessionPasswordNeededError, PhoneNumberInvalidError, FloodWaitError
+from telethon.errors import (
+    SessionPasswordNeededError, 
+    PhoneCodeInvalidError, 
+    PhoneCodeExpiredError,
+    PhoneNumberInvalidError,
+    FloodWaitError
+)
 
 # إعدادات البوت
 API_ID = 23656977
 API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
 BOT_TOKEN = '7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc'
+ADMIN_ID = 7251748706
+DEVELOPER = "@Ili8_8ill"
 
-# تهيئة قاعدة البيانات
-conn = sqlite3.connect('bot_data.db', check_same_thread=False)
-c = conn.cursor()
+# حالات المحادثة
+LOGIN, ADD_SUPER, PUBLISH_INTERVAL = range(3)
 
-# إنشاء الجداول
-c.execute('''CREATE TABLE IF NOT EXISTS users
-             (user_id INTEGER PRIMARY KEY, phone TEXT, session TEXT)''')
-c.execute('''CREATE TABLE IF NOT EXISTS groups
-             (group_id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT)''')
-c.execute('''CREATE TABLE IF NOT EXISTS stats
-             (user_id INTEGER PRIMARY KEY, publish_count INTEGER DEFAULT 0)''')
-conn.commit()
+# فترات النشر
+PUBLISH_INTERVALS = {
+    2: "2 دقائق",
+    5: "5 دقائق",
+    10: "10 دقائق",
+    20: "20 دقيقة",
+    30: "30 دقيقة",
+    60: "60 دقيقة",
+    120: "120 دقيقة"
+}
 
-# تهيئة العميل
-bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# إنشاء قاعدة البيانات
+def init_db():
+    conn = sqlite3.connect('publishing_bot.db')
+    cursor = conn.cursor()
+    
+    # جدول المستخدمين
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        phone TEXT,
+        session_file TEXT,
+        created_at TEXT
+    )
+    ''')
+    
+    # جدول المجموعات
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS groups (
+        group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        group_link TEXT,
+        group_name TEXT,
+        added_at TEXT
+    )
+    ''')
+    
+    # جدول النشر
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS publishing (
+        publish_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        group_id INTEGER,
+        interval INTEGER,
+        last_published TEXT,
+        is_active INTEGER DEFAULT 1
+    )
+    ''')
+    
+    # جدول الإحصائيات
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS statistics (
+        stat_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        publish_count INTEGER DEFAULT 0,
+        last_activity TEXT
+    )
+    ''')
+    
+    conn.commit()
+    conn.close()
 
-# لوحة المفاتيح الرئيسية
-def main_keyboard():
-    return [
-        [Button.inline("════ LOGIN | تسجيل ════", b'login')],
+# إنشاء عميل البوت
+bot = TelegramClient('publishing_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+
+# القائمة الرئيسية
+async def main_menu(event, message=None):
+    buttons = [
+        [Button.inline("═════ LOGIN | تسجيل ═════", data="login")],
         [
-            Button.inline("بدء النشر", b'start_publishing'),
-            Button.inline("اضف سوبر", b'add_super')
+            Button.inline("بدء النشر", data="start_publishing"),
+            Button.inline("اضف سوبر", data="add_super")
         ],
         [
-            Button.inline("مساعدة", b'help'),
-            Button.inline("احصائيات", b'stats')
+            Button.inline("مساعدة", data="help"),
+            Button.inline("احصائيات", data="stats")
         ]
     ]
+    
+    text = "⚡️ **مرحباً بك في بوت النشر التلقائي** ⚡️\n\n" \
+           "اختر أحد الخيارات من القائمة:"
+    
+    if message:
+        await event.edit(text, buttons=buttons)
+    else:
+        await event.respond(text, buttons=buttons)
 
-# لوحة فترات النشر
-def intervals_keyboard():
-    return [
-        [Button.inline("2 دقائق", b'interval_2')],
-        [Button.inline("5 دقائق", b'interval_5')],
-        [Button.inline("10 دقائق", b'interval_10')],
-        [Button.inline("20 دقيقة", b'interval_20')],
-        [Button.inline("30 دقيقة", b'interval_30')],
-        [Button.inline("60 دقيقة", b'interval_60')],
-        [Button.inline("120 دقيقة", b'interval_120')],
-        [Button.inline("رجوع", b'back_main')]
-    ]
-
-# لوحة الرجوع
-def back_keyboard():
-    return [[Button.inline("رجوع", b'back_main')]]
-
-# بدء البوت
+# بدء المحادثة
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    await event.reply(
-        "مرحباً! أنا بوت النشر التلقائي في المجموعات",
-        buttons=main_keyboard()
-    )
+    await main_menu(event)
 
 # معالجة الضغط على الأزرار
 @bot.on(events.CallbackQuery)
-async def callback_handler(event):
+async def handle_buttons(event):
+    user_id = event.sender_id
     data = event.data.decode('utf-8')
-    user_id = event.sender_id
     
-    if data == 'login':
-        await login(event)
-    elif data == 'add_super':
-        await add_super(event)
-    elif data == 'start_publishing':
-        await show_intervals(event)
-    elif data == 'help':
+    if data == "login":
+        await handle_login(event)
+    elif data == "add_super":
+        await handle_add_super(event)
+    elif data == "start_publishing":
+        await start_publishing_menu(event)
+    elif data == "help":
         await show_help(event)
-    elif data == 'stats':
+    elif data == "stats":
         await show_stats(event)
-    elif data == 'back_main':
-        await back_to_main(event)
-    elif data.startswith('interval_'):
-        await start_publishing(event, data)
-    else:
-        await event.answer("خيار غير معروف!")
+    elif data == "back":
+        await main_menu(event, message=True)
+    elif data.startswith("interval_"):
+        interval = int(data.split("_")[1])
+        await start_publishing(event, interval)
+    elif data == "cancel":
+        await event.edit("❌ تم الإلغاء")
+        await main_menu(event, message=True)
 
-# عملية تسجيل الدخول باستخدام المحادثة (الحل النهائي)
-async def login(event):
-    # إعادة تعيين حالة المستخدم
-    c.execute("UPDATE users SET session = NULL WHERE user_id = ?", (event.sender_id,))
-    conn.commit()
-    
-    async with bot.conversation(event.sender_id) as conv:
-        try:
-            await conv.send_message(
-                "📱 أرسل رقم هاتفك مع رمز الدولة (مثال: +20123456789)",
-                buttons=back_keyboard()
-            )
-            
-            # استقبال رقم الهاتف
-            phone_response = await conv.get_response()
-            phone = phone_response.text.strip()
-            
-            if not re.match(r'^\+\d{10,15}$', phone):
-                await conv.send_message("❌ رقم غير صحيح! أعد المحاولة", buttons=back_keyboard())
-                return
-            
-            # حفظ رقم الهاتف مؤقتاً
-            c.execute("INSERT OR REPLACE INTO users (user_id, phone) VALUES (?, ?)", 
-                     (event.sender_id, phone))
-            conn.commit()
-            
-            # إنشاء جلسة جديدة
-            client = TelegramClient(StringSession(), API_ID, API_HASH)
-            await client.connect()
-            
-            # إرسال رمز التحقق
-            try:
-                await client.send_code_request(phone)
-                await conv.send_message(
-                    f"✅ تم إرسال رمز التحقق إلى {phone}\n"
-                    "🔢 أرسل الرمز الآن (5 أرقام)\n"
-                    "⏱ لديك 5 دقائق لإدخال الرمز",
-                    buttons=back_keyboard()
-                )
-            except FloodWaitError as fwe:
-                await conv.send_message(
-                    f"⏳ يجب الانتظار {fwe.seconds} ثانية قبل إعادة المحاولة",
-                    buttons=main_keyboard()
-                )
-                return
-            except PhoneNumberInvalidError:
-                await conv.send_message("❌ رقم الهاتف غير صالح", buttons=main_keyboard())
-                return
-            except Exception as e:
-                await conv.send_message(f"❌ خطأ غير متوقع: {str(e)}", buttons=main_keyboard())
-                return
-            
-            # استقبال رمز التحقق
-            code_response = await conv.get_response()
-            code = code_response.text.strip().replace(' ', '')
-            
-            if not code.isdigit() or len(code) != 5:
-                await conv.send_message("❌ رمز غير صحيح! يجب أن يكون 5 أرقام", buttons=back_keyboard())
-                return
-            
-            # تسجيل الدخول بالرمز
-            try:
-                await client.sign_in(phone, code=code)
-            except SessionPasswordNeededError:
-                await conv.send_message("🔒 الحساب محمي بكلمة مرور، أرسل كلمة المرور الآن:")
-                
-                # استقبال كلمة المرور
-                password_response = await conv.get_response()
-                password = password_response.text
-                await client.sign_in(password=password)
-            
-            # حفظ الجلسة
-            session_str = client.session.save()
-            c.execute("UPDATE users SET session = ? WHERE user_id = ?", 
-                     (session_str, event.sender_id))
-            conn.commit()
-            
-            # التحقق من تسجيل الدخول
-            me = await client.get_me()
-            await conv.send_message(
-                f"✅ تم تسجيل الدخول بنجاح باسم: {me.first_name}",
-                buttons=main_keyboard()
-            )
-            
-        except asyncio.TimeoutError:
-            await conv.send_message("❌ انتهى الوقت! أعد العملية من البداية", buttons=main_keyboard())
-        except Exception as e:
-            await conv.send_message(f"❌ خطأ غير متوقع: {str(e)}", buttons=main_keyboard())
+# تسجيل الدخول
+async def handle_login(event):
+    await event.edit(
+        "📱 **تسجيل الدخول**\n\n"
+        "الرجاء إرسال رقم هاتفك مع رمز الدولة:\n"
+        "مثال: +201234567890",
+        buttons=[[Button.inline("رجوع", data="back")]]
+    )
+    # تحديث حالة المستخدم
+    set_user_state(event.sender_id, LOGIN)
 
-# إضافة مجموعات سوبر باستخدام المحادثة (الحل النهائي)
-async def add_super(event):
-    async with bot.conversation(event.sender_id) as conv:
-        try:
-            await conv.send_message(
-                "🔗 أرسل رابط الدعوة للمجموعة (يجب أن تكون رابط دعوة صالح)",
-                buttons=back_keyboard()
-            )
-            
-            # استقبال رابط الدعوة
-            invite_response = await conv.get_response()
-            invite_link = invite_response.text.strip()
-            
-            # استخراج الهاش من الرابط
-            hash_match = re.search(r'\+(\w+)', invite_link) or re.search(r't.me/joinchat/(\w+)', invite_link)
-            if not hash_match:
-                await conv.send_message("❌ رابط غير صالح!", buttons=back_keyboard())
-                return
-            
-            invite_hash = hash_match.group(1)
-            
-            # الانضمام للمجموعة
-            client = await get_user_client(event.sender_id)
-            if not client:
-                await conv.send_message("❌ يجب تسجيل الدخول أولاً!", buttons=main_keyboard())
-                return
-            
-            try:
-                result = await client(ImportChatInviteRequest(hash=invite_hash))
-                
-                # حفظ المجموعة
-                if result.chats:
-                    c.execute("INSERT OR IGNORE INTO groups (group_id, user_id, title) VALUES (?, ?, ?)",
-                             (result.chats[0].id, event.sender_id, result.chats[0].title))
-                    conn.commit()
-                    
-                    await conv.send_message(f"✅ تم إضافة المجموعة: {result.chats[0].title}", buttons=main_keyboard())
-                else:
-                    await conv.send_message("❌ لم يتم العثور على المجموعة", buttons=main_keyboard())
-                    
-            except Exception as e:
-                await conv.send_message(f"❌ خطأ في الانضمام: {str(e)}", buttons=main_keyboard())
-                
-        except asyncio.TimeoutError:
-            await conv.send_message("❌ انتهى الوقت! أعد المحاولة", buttons=main_keyboard())
+# معالجة إضافة المجموعات
+async def handle_add_super(event):
+    await event.edit(
+        "📢 **إضافة مجموعات للنشر**\n\n"
+        "الرجاء إرسال روابط المجموعات (سوبر جروب) التي تريد النشر فيها:\n"
+        "مثال: https://t.me/group_name\n\n"
+        "يمكنك إرسال أكثر من رابط في نفس الرسالة",
+        buttons=[[Button.inline("رجوع", data="back")]]
+    )
+    # تحديث حالة المستخدم
+    set_user_state(event.sender_id, ADD_SUPER)
 
-# بدء النشر الدوري
-async def start_publishing(event, interval_data):
-    minutes = int(interval_data.split('_')[1])
-    user_id = event.sender_id
+# قائمة فترات النشر
+async def start_publishing_menu(event):
+    buttons = [
+        [Button.inline(text, data=f"interval_{interval}")]
+        for interval, text in PUBLISH_INTERVALS.items()
+    ]
+    buttons.append([Button.inline("رجوع", data="back")])
     
     await event.edit(
-        f"⏱ سيبدأ النشر كل {minutes} دقيقة",
-        buttons=back_keyboard()
+        "⏱ **اختر الفترة الزمنية للنشر**\n\n"
+        "سيتم النشر في جميع المجموعات المضافة كل الفترة المحددة:",
+        buttons=buttons
     )
-    
-    # تحديث الإحصائيات
-    c.execute("UPDATE stats SET publish_count = publish_count + 1 WHERE user_id = ?", (user_id,))
-    c.execute("INSERT OR IGNORE INTO stats (user_id, publish_count) VALUES (?, 1)", (user_id,))
-    conn.commit()
-    
-    # إشعار بدء النشر
-    await asyncio.sleep(2)
-    await event.respond(f"✅ تم بدء النشر بنجاح بفاصل {minutes} دقيقة", buttons=main_keyboard())
-
-# عرض الإحصائيات
-async def show_stats(event):
-    user_id = event.sender_id
-    
-    # مجموع المستخدمين
-    c.execute("SELECT COUNT(*) FROM users")
-    total_users = c.fetchone()[0] or 0
-    
-    # مجموع المجموعات
-    c.execute("SELECT COUNT(*) FROM groups")
-    total_groups = c.fetchone()[0] or 0
-    
-    # إحصائيات المستخدم
-    c.execute("SELECT publish_count FROM stats WHERE user_id = ?", (user_id,))
-    user_stats = c.fetchone()
-    user_count = user_stats[0] if user_stats else 0
-    
-    message = (
-        f"📊 إحصائيات البوت:\n\n"
-        f"• عدد المستخدمين: {total_users}\n"
-        f"• عدد المجموعات: {total_groups}\n"
-        f"• عدد نشراتك: {user_count}\n\n"
-        f"المطور: @Ili8_8ill"
-    )
-    
-    await event.edit(message, buttons=back_keyboard())
 
 # عرض المساعدة
 async def show_help(event):
     help_text = (
-        "⚙️ طريقة الاستخدام:\n\n"
-        "1. اضغط على 'تسجيل' لإضافة حسابك\n"
-        "2. استخدم 'اضف سوبر' لإضافة مجموعاتك\n"
-        "3. اختر 'بدء النشر' لتحديد الفترة\n\n"
-        "⚠️ تحذيرات:\n"
-        "- لا تشارك رمز التحقق مع أحد\n"
-        "- تأكد من صلاحية روابط الدعوة\n"
-        "- البوت لا يخزن بياناتك الشخصية\n\n"
-        "👨‍💻 المطور: @Ili8_8ill"
+        "🆘 **دليل استخدام البوت**\n\n"
+        "1. **تسجيل الدخول**: أضف حسابك عبر رقم الهاتف\n"
+        "2. **إضافة سوبر**: أضف المجموعات التي تريد النشر فيها\n"
+        "3. **بدء النشر**: اختر الفترة الزمنية لبدء النشر التلقائي\n\n"
+        "⚠️ **تحذيرات مهمة**:\n"
+        "- لا تستخدم البوت في إرسال سبام\n"
+        "- تأكد من أن لديك إذن النشر في المجموعات\n"
+        "- البوت ليس مسؤولاً عن حظر حسابك\n\n"
+        f"المطور: {DEVELOPER}"
     )
-    await event.edit(help_text, buttons=back_keyboard())
-
-# وظائف مساعدة
-async def get_user_client(user_id):
-    c.execute("SELECT session FROM users WHERE user_id = ?", (user_id,))
-    session_row = c.fetchone()
     
-    if not session_row or not session_row[0]:
-        return None
+    await event.edit(
+        help_text,
+        buttons=[[Button.inline("رجوع", data="back")]]
+    )
+
+# عرض الإحصائيات
+async def show_stats(event):
+    user_id = event.sender_id
+    conn = sqlite3.connect('publishing_bot.db')
+    cursor = conn.cursor()
+    
+    # إحصائيات المستخدم
+    cursor.execute("SELECT COUNT(*) FROM publishing WHERE user_id = ?", (user_id,))
+    user_publish_count = cursor.fetchone()[0]
+    
+    # الإحصائيات العامة
+    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM users")
+    total_users = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM groups")
+    total_groups = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT SUM(publish_count) FROM statistics")
+    total_publishes = cursor.fetchone()[0] or 0
+    
+    stats_text = (
+        "📊 **إحصائيات البوت**\n\n"
+        f"• عدد مرات النشر الخاصة بك: `{user_publish_count}`\n"
+        f"• إجمالي مرات النشر: `{total_publishes}`\n"
+        f"• عدد المستخدمين: `{total_users}`\n"
+        f"• عدد المجموعات المضافة: `{total_groups}`"
+    )
+    
+    conn.close()
+    
+    await event.edit(
+        stats_text,
+        buttons=[[Button.inline("رجوع", data="back")]]
+    )
+
+# بدء النشر
+async def start_publishing(event, interval):
+    user_id = event.sender_id
+    
+    # التحقق من وجود جلسة مستخدم
+    conn = sqlite3.connect('publishing_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT session_file FROM users WHERE user_id = ?", (user_id,))
+    session_data = cursor.fetchone()
+    
+    if not session_data:
+        await event.edit(
+            "❌ يجب تسجيل الدخول أولاً",
+            buttons=[[Button.inline("تسجيل الدخول", data="login")]]
+        )
+        return
+    
+    # التحقق من وجود مجموعات
+    cursor.execute("SELECT COUNT(*) FROM groups WHERE user_id = ?", (user_id,))
+    group_count = cursor.fetchone()[0]
+    
+    if group_count == 0:
+        await event.edit(
+            "❌ يجب إضافة مجموعات أولاً",
+            buttons=[[Button.inline("إضافة مجموعات", data="add_super")]]
+        )
+        return
+    
+    # بدء عملية النشر
+    await event.edit(
+        f"⏳ جاري بدء النشر كل `{PUBLISH_INTERVALS[interval]}`...\n\n"
+        "سيتم إرسال رسالة تأكيد بعد كل نشر ناجح",
+        buttons=[[Button.inline("إلغاء النشر", data="cancel")]]
+    )
+    
+    # حفظ إعدادات النشر
+    cursor.execute("INSERT INTO publishing (user_id, interval) VALUES (?, ?)", 
+                  (user_id, interval))
+    conn.commit()
+    conn.close()
+    
+    # بدء النشر التلقائي
+    asyncio.create_task(auto_publish(user_id, interval))
+
+# النشر التلقائي
+async def auto_publish(user_id, interval):
+    while True:
+        try:
+            # جلب بيانات المستخدم
+            conn = sqlite3.connect('publishing_bot.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT session_file FROM users WHERE user_id = ?", (user_id,))
+            session_file = cursor.fetchone()[0]
+            
+            # جلب المجموعات
+            cursor.execute("SELECT group_link FROM groups WHERE user_id = ?", (user_id,))
+            groups = cursor.fetchall()
+            
+            # الاتصال بحساب المستخدم
+            async with TelegramClient(session_file, API_ID, API_HASH) as client:
+                for group in groups:
+                    try:
+                        entity = await client.get_entity(group[0])
+                        await client.send_message(
+                            entity, 
+                            "📢 هذا منشور تلقائي من البوت\n"
+                            "نتمنى لكم يوماً سعيداً! 🌟"
+                        )
+                        
+                        # تحديث الإحصائيات
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO statistics (user_id) 
+                            VALUES (?)
+                        """, (user_id,))
+                        
+                        cursor.execute("""
+                            UPDATE statistics 
+                            SET publish_count = publish_count + 1,
+                                last_activity = ?
+                            WHERE user_id = ?
+                        """, (datetime.now().isoformat(), user_id))
+                        
+                        conn.commit()
+                        
+                        # إرسال تأكيد للمستخدم
+                        await bot.send_message(
+                            user_id,
+                            f"✅ تم النشر في {entity.title} بنجاح!"
+                        )
+                    except Exception as e:
+                        await bot.send_message(
+                            user_id,
+                            f"❌ فشل النشر في {group[0]}: {str(e)}"
+                        )
+            
+            # الانتظار للفترة المحددة
+            await asyncio.sleep(interval * 60)
+            
+        except Exception as e:
+            await bot.send_message(
+                user_id,
+                f"❌ خطأ في النشر التلقائي: {str(e)}\n"
+                "جاري إعادة المحاولة بعد 5 دقائق..."
+            )
+            await asyncio.sleep(300)
+
+# معالجة رسائل المستخدم
+@bot.on(events.NewMessage)
+async def handle_messages(event):
+    user_id = event.sender_id
+    state = get_user_state(user_id)
+    
+    if state == LOGIN:
+        await process_login(event)
+    elif state == ADD_SUPER:
+        await process_add_groups(event)
+
+# معالجة تسجيل الدخول
+async def process_login(event):
+    user_id = event.sender_id
+    phone = event.raw_text.strip()
+    
+    # التحقق من صحة الرقم
+    if not re.match(r"^\+\d{10,15}$", phone):
+        await event.respond(
+            "❌ رقم غير صحيح! الرجاء إرسال رقم صحيح مثل:\n"
+            "+201234567890",
+            buttons=[[Button.inline("رجوع", data="back")]]
+        )
+        return
+    
+    # إنشاء جلسة جديدة
+    session_file = f"sessions/{user_id}.session"
+    client = TelegramClient(session_file, API_ID, API_HASH)
+    await client.connect()
     
     try:
-        client = TelegramClient(StringSession(session_row[0]), API_ID, API_HASH)
-        await client.connect()
+        # إرسال كود التحقق
+        sent_code = await client.send_code_request(phone)
+        set_session_data(user_id, {
+            'client': client,
+            'phone': phone,
+            'phone_code_hash': sent_code.phone_code_hash
+        })
         
-        # التحقق من صحة الجلسة
-        if not await client.is_user_authorized():
-            return None
-            
-        return client
-    except Exception:
-        return None
+        await event.respond(
+            f"🔑 تم إرسال كود التحقق إلى {phone}\n"
+            "الرجاء إدخال الكود المكون من 5 أرقام:",
+            buttons=[[Button.inline("رجوع", data="back")]]
+        )
+        # تحديث حالة المستخدم
+        set_user_state(user_id, "CODE")
+        
+    except Exception as e:
+        await event.respond(
+            f"❌ حدث خطأ: {str(e)}\n"
+            "الرجاء المحاولة مرة أخرى",
+            buttons=[[Button.inline("رجوع", data="back")]]
+        )
 
-async def show_intervals(event):
-    await event.edit(
-        "⏰ اختر الفترة بين النشرات:",
-        buttons=intervals_keyboard()
+# معالجة إضافة المجموعات
+async def process_add_groups(event):
+    user_id = event.sender_id
+    text = event.raw_text
+    
+    # استخراج الروابط
+    links = re.findall(r'https?://t\.me/\w+', text) + re.findall(r'@\w+', text)
+    
+    if not links:
+        await event.respond(
+            "❌ لم يتم العثور على روابط صحيحة\n"
+            "الرجاء إرسال روابط المجموعات:",
+            buttons=[[Button.inline("رجوع", data="back")]]
+        )
+        return
+    
+    # حفظ المجموعات
+    conn = sqlite3.connect('publishing_bot.db')
+    cursor = conn.cursor()
+    
+    for link in links:
+        # تنظيف الرابط
+        if link.startswith("@"):
+            link = "https://t.me/" + link[1:]
+        
+        cursor.execute("""
+            INSERT INTO groups (user_id, group_link, added_at) 
+            VALUES (?, ?, ?)
+        """, (user_id, link, datetime.now().isoformat()))
+    
+    conn.commit()
+    conn.close()
+    
+    await event.respond(
+        f"✅ تم إضافة {len(links)} مجموعة بنجاح!",
+        buttons=[[Button.inlight("رجوع", data="back")]]
     )
+    await main_menu(event)
 
-async def back_to_main(event):
-    await event.edit(
-        "🏠 القائمة الرئيسية:",
-        buttons=main_keyboard()
-    )
+# وظائف مساعدة لإدارة الحالة والبيانات
+def set_user_state(user_id, state):
+    # في الإصدار الحقيقي، يجب حفظ الحالة في قاعدة البيانات
+    # هنا سنستخدم متغير بسيط للتبسيط
+    global user_states
+    user_states[user_id] = state
 
+def get_user_state(user_id):
+    return user_states.get(user_id, None)
+
+def set_session_data(user_id, data):
+    global sessions
+    sessions[user_id] = data
+
+def get_session_data(user_id):
+    return sessions.get(user_id, None)
+
+# تهيئة البيانات
+init_db()
+user_states = {}
+sessions = {}
+
+# تشغيل البوت
 if __name__ == '__main__':
-    print("Bot is running...")
+    # إنشاء مجلد الجلسات
+    os.makedirs('sessions', exist_ok=True)
+    
+    print("جارٍ تشغيل بوت النشر التلقائي...")
     bot.run_until_disconnected()
