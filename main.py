@@ -1,22 +1,36 @@
 import telebot
 import google.generativeai as genai
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask, request
+import threading
+import time
 
 # تكوين التوكنات والمفاتيح
 TOKEN = "8299954739:AAHlkfRH4N0cDjv-IToJkXQwwIqYCtzcVCQ"
 GEMINI_API_KEY = "AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE"
 ADMIN_ID = 7251748706
 MANDATORY_CHANNELS = ["@crazys7", "@AWU87"]  # القنوات الإجبارية
+WEBHOOK_URL = "https://pixai7.onrender.com/" + TOKEN
 
 # تهيئة الذكاء الاصطناعي Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-1.5-pro-latest')  # استخدام أحدث نموذج
 
 # إنشاء البوت
 bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
 # تخزين مؤقت لحالة المشتركين
 subscribed_users = set()
+
+# وظيفة للحفاظ على تشغيل الخادم
+def keep_alive():
+    while True:
+        time.sleep(300)  # إرسال طلب كل 5 دقائق
+        try:
+            import requests
+            requests.get(WEBHOOK_URL)
+        except: pass
 
 # وظيفة للتحقق من الاشتراك في القنوات
 def check_subscription(user_id):
@@ -93,8 +107,33 @@ def handle_message(message):
         response = model.generate_content(message.text)
         bot.reply_to(message, response.text)
     except Exception as e:
-        bot.reply_to(message, f"❌ حدث خطأ: {str(e)}")
+        bot.reply_to(message, f"❌ حدث خطأ في الذكاء الاصطناعي: {str(e)}")
+
+# تهيئة ويب هووك
+@app.route('/' + TOKEN, methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return 'Invalid content type', 403
+
+@app.route('/')
+def index():
+    return 'Bot is running!', 200
 
 # تشغيل البوت
-print("Bot is running...")
-bot.polling()
+if __name__ == '__main__':
+    # إزالة ويب هووكات السابقة
+    bot.remove_webhook()
+    time.sleep(1)
+    
+    # تعيين ويب هووك جديد
+    bot.set_webhook(url=WEBHOOK_URL)
+    
+    # بدء تشغيل خادم الحفاظ على النشاط
+    threading.Thread(target=keep_alive).start()
+    
+    # بدء تشغيل الخادم
+    app.run(host='0.0.0.0', port=8080)
