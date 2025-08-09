@@ -1,168 +1,260 @@
-import telebot
-import requests
-import json
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask, request
-import threading
-import time
+import os
+import re
+import asyncio
+import logging
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardRemove
+)
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    CallbackContext,
+    MessageHandler,
+    Filters,
+    ConversationHandler,
+    CallbackQueryHandler
+)
 
-# تكوين التوكنات والمفاتيح
-TOKEN = "8299954739:AAHlkfRH4N0cDjv-IToJkXQwwIqYCtzcVCQ"
-ADMIN_ID = 7251748706
-MANDATORY_CHANNELS = ["@crazys7", "@AWU87"]
-WEBHOOK_URL = "https://pixai7.onrender.com/" + TOKEN
-GROQ_API_KEY = "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"  # استبدل بمفتاح Groq الخاص بك
+# إعدادات البوت
+TOKEN = "8312137482:AAEORpBnD8CmFfB39ayJT4UputPoSh_qCRw"
+ADMIN_ID = 7251748706  # وضع إداري آيديك هنا
 
-# إنشاء البوت
-bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
+# مراحل المحادثة
+PHONE, CODE, REPORT_TYPE, REPORT_LINK, REPORT_MESSAGE, CONFIRMATION = range(6)
 
-# تخزين مؤقت لحالة المشتركين
-subscribed_users = set()
+# أنواع البلاغات
+REPORT_TYPES = {
+    "spam": "بريد مزعج",
+    "violence": "عنف",
+    "porn": "إباحي",
+    "terrorism": "إرهاب",
+    "scam": "احتيال",
+    "hate": "خطاب كراهية"
+}
 
-# وظيفة للحفاظ على تشغيل الخادم
-def keep_alive():
-    while True:
-        time.sleep(300)
-        try:
-            requests.get(WEBHOOK_URL)
-        except: 
-            pass
+# تخزين بيانات الجلسة
+sessions = {}
+reports = {}
 
-# وظيفة للتحقق من الاشتراك في القنوات
-def check_subscription(user_id):
-    try:
-        for channel in MANDATORY_CHANNELS:
-            member = bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                return False
-        return True
-    except Exception as e:
-        print(f"خطأ في التحقق من الاشتراك: {e}")
-        return False
+# بدء البوت
+def start(update: Update, context: CallbackContext) -> int:
+    user = update.message.from_user
+    keyboard = [
+        [InlineKeyboardButton("بدء جلسة جديدة", callback_data="new_session")]
+    ]
+    update.message.reply_text(
+        "مرحباً! 🌍\n"
+        "هذا البوت يساعدك في الإبلاغ عن المحتوى الضار لخلق بيئة تلجرام أنظف.\n\n"
+        "اضغط على الزر لبدء جلسة الإبلاغ:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return PHONE
 
-# إنشاء لوحة مفاتيح للاشتراك الإجباري
-def subscription_keyboard():
-    markup = InlineKeyboardMarkup()
-    for channel in MANDATORY_CHANNELS:
-        markup.add(InlineKeyboardButton(f"اشترك في {channel}", url=f"https://t.me/{channel[1:]}"))
-    markup.add(InlineKeyboardButton("✅ تأكيد الاشتراك", callback_data="check_subscription"))
-    return markup
+# معالجة إنشاء جلسة
+def handle_session(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(
+        "📱 الرجاء إرسال رقم هاتفك (مع رمز الدولة) مثل:\n"
+        "+201234567890\n\n"
+        "سيتم إرسال كود التحقق إلى حسابك على تلجرام."
+    )
+    return PHONE
 
-# وظيفة الذكاء الاصطناعي باستخدام Llama 3
-def get_ai_response(prompt):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
+# معالجة رقم الهاتف
+def handle_phone(update: Update, context: CallbackContext) -> int:
+    phone = update.message.text
+    if not re.match(r"^\+\d{10,15}$", phone):
+        update.message.reply_text("❌ رقم غير صحيح! الرجاء إدخال رقم صحيح مع رمز الدولة مثل: +201234567890")
+        return PHONE
+    
+    # في الواقع هنا يجب إرسال الكود إلى المستخدم عبر تلجرام
+    # لكن لأغراض التجربة سنستخدم كود وهمي
+    context.user_data['phone'] = phone
+    context.user_data['code'] = "12345"  # في الواقع يتم توليد كود عشوائي
+    
+    update.message.reply_text(
+        f"🔑 تم إرسال كود التحقق إلى {phone}\n"
+        "الرجاء إدخال الكود المكون من 5 أرقام:"
+    )
+    return CODE
+
+# معالجة كود التحقق
+def handle_code(update: Update, context: CallbackContext) -> int:
+    user_code = update.message.text
+    if user_code != context.user_data.get('code', ''):
+        update.message.reply_text("❌ كود التحقق غير صحيح! الرجاء المحاولة مرة أخرى.")
+        return CODE
+    
+    # تخزين الجلسة
+    user_id = update.message.from_user.id
+    sessions[user_id] = {
+        'phone': context.user_data['phone'],
+        'verified': True
     }
     
-    payload = {
-        "messages": [
-            {"role": "system", "content": "أنت مساعد ذكي يتحدث العربية بطلاقة."},
-            {"role": "user", "content": prompt}
-        ],
-        "model": "llama3-70b-8192",
-        "temperature": 0.7,
-        "max_tokens": 2000,
-        "top_p": 1,
-        "stream": False
-    }
+    # بناء لوحة المفاتيح لأنواع البلاغات
+    keyboard = [
+        [InlineKeyboardButton(name, callback_data=type_id)]
+        for type_id, name in REPORT_TYPES.items()
+    ]
     
-    try:
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=60
+    update.message.reply_text(
+        "✅ تم التحقق بنجاح!\n\n"
+        "الرجاء اختيار نوع البلاغ:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return REPORT_TYPE
+
+# معالجة نوع البلاغ
+def handle_report_type(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    report_type = query.data
+    context.user_data['report_type'] = report_type
+    
+    query.edit_message_text(
+        f"📌 نوع البلاغ: {REPORT_TYPES[report_type]}\n\n"
+        "الرجاء إرسال رابط المجموعة/القناة/الحساب:"
+    )
+    return REPORT_LINK
+
+# معالجة رابط البلاغ
+def handle_report_link(update: Update, context: CallbackContext) -> int:
+    link = update.message.text
+    if not re.match(r"^(https?://t\.me/|@)[a-zA-Z0-9_]{5,32}$", link):
+        update.message.reply_text("❌ رابط غير صحيح! الرجاء إرسال رابط صحيح مثل:\nhttps://t.me/group_name\nأو @username")
+        return REPORT_LINK
+    
+    context.user_data['report_link'] = link
+    update.message.reply_text(
+        "✍️ الرجاء كتابة تفاصيل البلاغ:\n"
+        "(وصف المشكلة، المستخدمين المتورطين، إلخ)"
+    )
+    return REPORT_MESSAGE
+
+# معالجة تفاصيل البلاغ
+def handle_report_message(update: Update, context: CallbackContext) -> int:
+    report_message = update.message.text
+    context.user_data['report_message'] = report_message
+    
+    # تأكيد البلاغ
+    report_details = (
+        f"📝 تفاصيل البلاغ:\n"
+        f"النوع: {REPORT_TYPES[context.user_data['report_type']]}\n"
+        f"الرابط: {context.user_data['report_link']}\n"
+        f"التفاصيل: {report_message}"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ تأكيد الإرسال", callback_data="confirm_send")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="cancel")]
+    ]
+    
+    update.message.reply_text(
+        report_details + "\n\n"
+        "الرجاء التأكيد قبل الإرسال:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CONFIRMATION
+
+# إرسال البلاغات
+def send_reports(context: CallbackContext, user_id: int):
+    report = reports.get(user_id)
+    if not report:
+        return
+    
+    # في الواقع هنا سيتم إرسال البلاغات إلى إدارة تلجرام
+    # هذا جزء محاكاة فقط
+    context.bot.send_message(
+        chat_id=user_id,
+        text=f"🚀 تم إرسال البلاغ #{report['count']} إلى إدارة تلجرام"
+    )
+    
+    report['count'] += 1
+    if report['count'] <= 10:  # إرسال 10 بلاغات كمثال
+        context.job_queue.run_once(
+            lambda ctx: send_reports(ctx, user_id),
+            10,  # كل 10 ثواني
+            context=user_id
+        )
+    else:
+        context.bot.send_message(
+            chat_id=user_id,
+            text="✅ تم إكمال عملية الإبلاغ! تم إرسال 10 بلاغات إلى إدارة تلجرام."
+        )
+        del reports[user_id]
+
+# معالجة التأكيد
+def handle_confirmation(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    query.answer()
+    
+    if query.data == "confirm_send":
+        user_id = query.from_user.id
+        reports[user_id] = {
+            'type': context.user_data['report_type'],
+            'link': context.user_data['report_link'],
+            'message': context.user_data['report_message'],
+            'count': 1
+        }
+        
+        query.edit_message_text(
+            "⏳ جاري بدء عملية الإبلاغ...\n"
+            "سأقوم بإرسال البلاغات بشكل متكرر حتى يتم حظر المحتوى.\n\n"
+            "يمكنك إيقاف العملية بأي وقت باستخدام /stop"
         )
         
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        else:
-            return f"❌ خطأ في API: {response.status_code} - {response.text}"
-            
-    except Exception as e:
-        return f"❌ خطأ في الاتصال: {str(e)}"
-
-# معالجة أمر /start
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    user_id = message.from_user.id
-    if check_subscription(user_id):
-        bot.reply_to(message, "مرحباً! أنا بوت الذكاء الاصطناعي المشابه لـ ChatGPT.\nاطرح علي أي سؤال وسأجيبك بذكاء!")
-        subscribed_users.add(user_id)
-        bot.send_message(ADMIN_ID, f"✅ مستخدم جديد انضم:\nID: {user_id}\nالمستخدم: @{message.from_user.username}")
+        # بدء إرسال البلاغات
+        send_reports(context, user_id)
+        return ConversationHandler.END
     else:
-        bot.send_message(
-            message.chat.id,
-            "📢 يجب الاشتراك في القنوات التالية أولاً:",
-            reply_markup=subscription_keyboard()
-        )
+        query.edit_message_text("❌ تم إلغاء عملية الإبلاغ.")
+        return ConversationHandler.END
 
-# معالجة التأكيد الاشتراك
-@bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
-def check_subscription_callback(call):
-    user_id = call.from_user.id
-    if check_subscription(user_id):
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text="✅ تم التأكيد! يمكنك الآن استخدام البوت."
-        )
-        subscribed_users.add(user_id)
-        bot.send_message(ADMIN_ID, f"✅ مستخدم جديد أكد الاشتراك:\nID: {user_id}\nالمستخدم: @{call.from_user.username}")
+# إيقاف البلاغات
+def stop_reporting(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    if user_id in reports:
+        del reports[user_id]
+        update.message.reply_text("⏹️ تم إيقاف عملية الإبلاغ بنجاح!")
     else:
-        bot.answer_callback_query(call.id, "❌ لم تشترك في جميع القنوات المطلوبة!", show_alert=True)
+        update.message.reply_text("⚠️ لا توجد عملية إبلاغ جارية.")
 
-# معالجة الرسائل النصية
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    user_id = message.from_user.id
+# إعداد البوت
+def main() -> None:
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
     
-    # التحقق من الاشتراك
-    if user_id not in subscribed_users:
-        if check_subscription(user_id):
-            subscribed_users.add(user_id)
-        else:
-            bot.send_message(
-                message.chat.id,
-                "⛔ يجب عليك الاشتراك في القنوات أولاً:",
-                reply_markup=subscription_keyboard()
-            )
-            return
+    updater = Updater(TOKEN)
+    dispatcher = updater.dispatcher
     
-    # إظهار أن البوت يكتب
-    bot.send_chat_action(message.chat.id, 'typing')
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            PHONE: [
+                CallbackQueryHandler(handle_session, pattern='^new_session$'),
+                MessageHandler(Filters.text & ~Filters.command, handle_phone)
+            ],
+            CODE: [MessageHandler(Filters.text & ~Filters.command, handle_code)],
+            REPORT_TYPE: [CallbackQueryHandler(handle_report_type)],
+            REPORT_LINK: [MessageHandler(Filters.text & ~Filters.command, handle_report_link)],
+            REPORT_MESSAGE: [MessageHandler(Filters.text & ~Filters.command, handle_report_message)],
+            CONFIRMATION: [CallbackQueryHandler(handle_confirmation)]
+        },
+        fallbacks=[CommandHandler('stop', stop_reporting)]
+    )
     
-    # الحصول على الرد من الذكاء الاصطناعي
-    response = get_ai_response(message.text)
-    bot.reply_to(message, response)
+    dispatcher.add_handler(conv_handler)
+    dispatcher.add_handler(CommandHandler("stop", stop_reporting))
+    
+    updater.start_polling()
+    updater.idle()
 
-# تهيئة ويب هووك
-@app.route('/' + TOKEN, methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return ''
-    return 'Invalid content type', 403
-
-@app.route('/')
-def index():
-    return '🤖 البوت يعمل بنجاح!', 200
-
-# تشغيل البوت
 if __name__ == '__main__':
-    # إزالة ويب هووكات السابقة
-    bot.remove_webhook()
-    time.sleep(1)
-    
-    # تعيين ويب هووك جديد
-    bot.set_webhook(url=WEBHOOK_URL)
-    
-    # بدء تشغيل خادم الحفاظ على النشاط
-    threading.Thread(target=keep_alive).start()
-    
-    # بدء تشغيل الخادم
-    app.run(host='0.0.0.0', port=8080)
+    main()
