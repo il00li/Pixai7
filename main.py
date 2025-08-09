@@ -1,20 +1,19 @@
 import telebot
-import google.generativeai as genai
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask, request
 import threading
 import time
+import groq
 
 # تكوين التوكنات والمفاتيح
 TOKEN = "8299954739:AAHlkfRH4N0cDjv-IToJkXQwwIqYCtzcVCQ"
-GEMINI_API_KEY = "AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE"
+GROQ_API_KEY = "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"  # استبدل بمفتاح Groq الخاص بك
 ADMIN_ID = 7251748706
 MANDATORY_CHANNELS = ["@crazys7", "@AWU87"]  # القنوات الإجبارية
 WEBHOOK_URL = "https://pixai7.onrender.com/" + TOKEN
 
-# تهيئة الذكاء الاصطناعي Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-pro-latest')  # استخدام أحدث نموذج
+# إنشاء عميل Groq
+client = groq.Groq(api_key=GROQ_API_KEY)
 
 # إنشاء البوت
 bot = telebot.TeleBot(TOKEN)
@@ -30,7 +29,8 @@ def keep_alive():
         try:
             import requests
             requests.get(WEBHOOK_URL)
-        except: pass
+        except: 
+            pass
 
 # وظيفة للتحقق من الاشتراك في القنوات
 def check_subscription(user_id):
@@ -102,10 +102,24 @@ def handle_message(message):
     # إظهار أن البوت يكتب
     bot.send_chat_action(message.chat.id, 'typing')
     
-    # توليد الرد باستخدام Gemini
+    # توليد الرد باستخدام Groq (Llama 3)
     try:
-        response = model.generate_content(message.text)
-        bot.reply_to(message, response.text)
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": message.text,
+                }
+            ],
+            model="llama3-70b-8192",  # يمكن تغيير النموذج إذا لزم الأمر
+            temperature=0.7,
+            max_tokens=4096,
+            top_p=1,
+            stop=None,
+            stream=False,
+        )
+        response = chat_completion.choices[0].message.content
+        bot.reply_to(message, response)
     except Exception as e:
         bot.reply_to(message, f"❌ حدث خطأ في الذكاء الاصطناعي: {str(e)}")
 
