@@ -401,10 +401,11 @@ async def send_reports(user_id):
         # الحصول على الكيان من الرابط
         entity = await client.get_entity(report['link'])
         
-        # إرسال البلاغ
+        # إرسال البلاغ - التصحيح هنا
         reason = REPORT_TYPES[report['type']][1]
         await client(ReportRequest(
             peer=entity,
+            id=[],  # قائمة فارغة للإبلاغ عن الكيان ككل
             reason=reason,
             message=report['message']
         ))
