@@ -1,155 +1,171 @@
 from telethon import TelegramClient, events, Button
-from telethon.tl.functions.messages import GetAllChatsRequest
-from telethon.tl.functions.channels import GetParticipantsRequest
-from telethon.tl import functions
 import asyncio
-import logging
-import re
+import os
 
-logging.basicConfig(level=logging.INFO)
+# Bot token and API credentials
+bot_token = os.environ.get('BOT_TOKEN', '7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc')
+api_id = int(os.environ.get('API_ID', '23656977'))
+api_hash = os.environ.get('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
 
-API_ID = 23656977
-API_HASH = "49d3f43531a92b3f5bc403766313ca1e"
-BOT_TOKEN = "8247037355:AAH2rRm9PJCXqcVISS8g-EL1lv3tvQTXFys"
+# Initialize the bot
+bot = TelegramClient('bot', api_id, api_hash).start(bot_token=bot_token)
 
-users_data = {}
-
-class BotUser:
-    def __init__(self):
-        self.phone = None
-        self.client = None
-        self.groups = []
-        self.content = ""
-        self.interval = 10
-        self.active = False
-
-bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# Initialize the user clients and supergroups dictionaries
+user_clients = {}
+user_supergroups = {}
+total_posts = 0
+user_posts = {}
 
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    user_id = event.sender_id
-    if user_id not in users_data:
-        users_data[user_id] = BotUser()
-
-    keyboard = [
-        [Button.inline("تسجيل دخول", b"login")],
-        [Button.inline("إضافة مجموعة", b"add")],
-        [Button.inline("بدء النشر", b"start_publish")],
-        [Button.inline("إيقاف النشر", b"stop_publish")],
-        [Button.inline("إحصائيات", b"stats")]
+    # Create the main menu buttons
+    buttons = [
+        [Button.inline("═ LOGIN | تسجيل ═", data="login")],
+        [Button.inline("بدء النشر", data="start_posting"), Button.inline("اضف سوبر", data="add_supergroups")],
+        [Button.inline("مساعدة", data="help"), Button.inline("احصائيات", data="statistics")]
     ]
-    await event.respond("👋 مرحباً! اختر من القائمة:", buttons=keyboard)
 
-@bot.on(events.CallbackQuery(pattern=b"login"))
+    # Send the main menu
+    await event.respond("مرحبا! انا بوت النشر التلقائي. اختر الخيار المطلوب:", buttons=buttons)
+
+@bot.on(events.CallbackQuery(data=b'login'))
 async def login(event):
-    await event.edit("📱 أرسل رقم هاتفك مع +:")
-    users_data[event.sender_id] = BotUser()
-    users_data[event.sender_id].phone = "waiting"
+    # Ask the user for their phone number
+    await event.edit("يرجى ارسال رقم هاتفك مع رمز البلد (مثل +1234567890):", buttons=[Button.inline("رجوع", data="back")])
 
-@bot.on(events.NewMessage(func=lambda e: users_data.get(e.sender_id) and users_data[e.sender_id].phone == "waiting"))
-async def receive_phone(event):
-    phone = event.text
-    if not re.match(r"^\+\d{10,15}$", phone):
-        await event.reply("❌ صيغة الرقم غير صحيحة.")
+    # Store the user's phone number
+    async with bot.conversation(event.sender_id) as conv:
+        phone_number = await conv.get_response()
+        await conv.send("يرجى ارسال رمز التحقق الذي تم ارساله لك:")
+
+        # Store the verification code
+        verification_code = await conv.get_response()
+
+        # Log in to the user's account
+        user_client = TelegramClient(f'user_{event.sender_id}', api_id, api_hash)
+        await user_client.start(phone_number, verification_code)
+
+        # Store the user's client
+        user_clients[event.sender_id] = user_client
+
+        await conv.send("تم تسجيل الدخول بنجاح!")
+
+@bot.on(events.CallbackQuery(data=b'add_supergroups'))
+async def add_supergroups(event):
+    # Ask the user for the supergroup usernames or IDs
+    await event.edit("يرجى ارسال اسم المستخدم أو معرف المجموعة التي تريد اضافتها (مثال: @groupusername أو -1001234567890):", buttons=[Button.inline("رجوع", data="back")])
+
+    # Store the supergroup usernames or IDs
+    async with bot.conversation(event.sender_id) as conv:
+        supergroup_ids = await conv.get_response()
+
+        # Store the supergroup IDs
+        user_supergroups[event.sender_id] = supergroup_ids.text.split()
+
+        await conv.send("تمت اضافة المجموعات بنجاح!")
+
+@bot.on(events.CallbackQuery(data=b'start_posting'))
+async def start_posting(event):
+    # Create the time interval buttons
+    buttons = [
+        [Button.inline("2 دقائق", data="2m"), Button.inline("5 دقائق", data="5m")],
+        [Button.inline("10 دقائق", data="10m"), Button.inline("20 دقائق", data="20m")],
+        [Button.inline("30 دقيقة", data="30m"), Button.inline("60 دقيقة", data="60m")],
+        [Button.inline("120 دقيقة", data="120m"), Button.inline("رجوع", data="back")]
+    ]
+
+    # Send the time interval menu
+    await event.edit("اختر الفاصل الزمني بين كل نشر:", buttons=buttons)
+
+@bot.on(events.CallbackQuery(data=b'help'))
+async def help(event):
+    # Display the help information
+    help_text = """
+    **استخدام البوت:**
+    1. اضغط على زر "═ LOGIN | تسجيل ═" لاضافة رقم هاتفك.
+    2. اضغط على زر "اضف سوبر" لاضافة المجموعات التي تريد النشر فيها.
+    3. اضغط على زر "بدء النشر" لاختيار الفاصل الزمني بين كل نشر.
+    4. اضغط على زر "احصائيات" لعرض الاحصائيات.
+
+    **تحذيرات:**
+    - لا تستخدم البوت لارسال رسائل غير مرغوب فيها.
+    - لا تستخدم البوت لارسال رسائل مزعجة أو غير قانونية.
+    - المطور @Ili8_8ill غير مسؤول عن أي استخدام غير قانوني للبوت.
+    """
+
+    await event.edit(help_text, buttons=[Button.inline("رجوع", data="back")])
+
+@bot.on(events.CallbackQuery(data=b'statistics'))
+async def statistics(event):
+    # Display the statistics
+    stats_text = f"""
+    **احصائيات البوت:**
+    - عدد مرات النشر الاجمالية: {total_posts}
+    - عدد مرات النشر الخاصة بك: {user_posts.get(event.sender_id, 0)}
+    - عدد المستخدمين للبوت: {len(user_clients)}
+    - عدد المجموعات المضافة للبوت: {len(user_supergroups)}
+    """
+
+    await event.edit(stats_text, buttons=[Button.inline("رجوع", data="back")])
+
+@bot.on(events.CallbackQuery(data=b'2m'))
+async def two_minutes(event):
+    # Start posting every 2 minutes
+    await start_posting_interval(event, 2)
+
+@bot.on(events.CallbackQuery(data=b'5m'))
+async def five_minutes(event):
+    # Start posting every 5 minutes
+    await start_posting_interval(event, 5)
+
+@bot.on(events.CallbackQuery(data=b'10m'))
+async def ten_minutes(event):
+    # Start posting every 10 minutes
+    await start_posting_interval(event, 10)
+
+@bot.on(events.CallbackQuery(data=b'20m'))
+async def twenty_minutes(event):
+    # Start posting every 20 minutes
+    await start_posting_interval(event, 20)
+
+@bot.on(events.CallbackQuery(data=b'30m'))
+async def thirty_minutes(event):
+    # Start posting every 30 minutes
+    await start_posting_interval(event, 30)
+
+@bot.on(events.CallbackQuery(data=b'60m'))
+async def sixty_minutes(event):
+    # Start posting every 60 minutes
+    await start_posting_interval(event, 60)
+
+@bot.on(events.CallbackQuery(data=b'120m'))
+async def one_hundred_twenty_minutes(event):
+    # Start posting every 120 minutes
+    await start_posting_interval(event, 120)
+
+async def start_posting_interval(event, interval):
+    # Get the user's client and supergroup IDs
+    user_client = user_clients.get(event.sender_id)
+    supergroup_ids = user_supergroups.get(event.sender_id, [])
+
+    if not user_client or not supergroup_ids:
+        await event.edit("يرجى تسجيل الدخول واضافة المجموعات اولا.")
         return
 
-    user = users_data[event.sender_id]
-    user.phone = phone
-    user.client = TelegramClient(StringSession(), API_ID, API_HASH)
-    await user.client.connect()
-    await user.client.send_code_request(phone)
-    user.phone = "code"
-    await event.reply("📬 أرسل الكود الذي وصلك:")
+    # Start posting
+    await event.edit(f"تم بدء النشر كل {interval} دقائق.")
 
-@bot.on(events.NewMessage(func=lambda e: users_data.get(e.sender_id) and users_data[e.sender_id].phone == "code"))
-async def receive_code(event):
-    code = event.text.strip()
-    user = users_data[event.sender_id]
-    try:
-        # ✅ هنا تغيير بسيط لضمان التحقق
-        await user.client.sign_in(user.phone, code)
-        user.auth = True
-        await event.reply("✅ تم تسجيل الدخول بنجاح!")
-    except Exception as e:
-        await event.reply("❌ خطأ في الكود أو رقم الهاتف.")
+    # Schedule the posting task
+    async def post_task():
+        while True:
+            for supergroup_id in supergroup_ids:
+                await user_client.send_message(supergroup_id, "نص النشر التلقائي")
+                total_posts += 1
+                user_posts[event.sender_id] = user_posts.get(event.sender_id, 0) + 1
+            await asyncio.sleep(interval * 60)
 
-@bot.on(events.CallbackQuery(pattern=b"add"))
-async def add_group(event):
-    await event.edit("🔗 أرسل معرف المجموعة أو رابطها:")
-    users_data[event.sender_id].phone = "add_group"
+    asyncio.create_task(post_task())
 
-@bot.on(events.NewMessage(func=lambda e: users_data.get(e.sender_id) and users_data[e.sender_id].phone == "add_group"))
-async def receive_group(event):
-    link = event.text
-    user = users_data[event.sender_id]
-    try:
-        group = await user.client.get_entity(link)
-        if group.id not in user.groups:
-            user.groups.append(group.id)
-            await event.reply(f"✅ تمت إضافة المجموعة: {group.title}")
-        else:
-            await event.reply("⚠️ المجموعة مضافة بالفعل.")
-        user.phone = None
-    except Exception as e:
-        await event.reply("❌ لم يتم العثور على المجموعة.")
-
-@bot.on(events.CallbackQuery(pattern=b"start_publish"))
-async def start_publish(event):
-    user = users_data[event.sender_id]
-    if not user.client or not user.groups:
-        await event.edit("❌ يجب تسجيل الدخول وإضافة مجموعات أولاً.")
-        return
-
-    await event.edit("📝 أرسل النص الذي تريد نشره:")
-    user.phone = "get_content"
-
-@bot.on(events.NewMessage(func=lambda e: users_data.get(e.sender_id) and users_data[e.sender_id].phone == "get_content"))
-async def receive_content(event):
-    user = users_data[event.sender_id]
-    user.content = event.text
-    user.phone = "get_interval"
-    await event.reply("⏱️ أرسل الفترة بالدقائق (2-120):")
-
-@bot.on(events.NewMessage(func=lambda e: users_data.get(e.sender_id) and users_data[e.sender_id].phone == "get_interval"))
-async def receive_interval(event):
-    try:
-        interval = int(event.text)
-        if not (2 <= interval <= 120):
-            raise ValueError
-        user = users_data[event.sender_id]
-        user.interval = interval
-        user.active = True
-        asyncio.create_task(publish_loop(event.sender_id))
-        await event.reply(f"✅ بدأ النشر كل {interval} دقيقة.")
-    except ValueError:
-        await event.reply("❌ يجب أن يكون الرقم بين 2 و 120.")
-
-async def publish_loop(user_id):
-    user = users_data[user_id]
-    while user.active:
-        for gid in user.groups:
-            try:
-                await user.client.send_message(gid, user.content)
-                await asyncio.sleep(10)
-            except Exception as e:
-                logging.error(f"فشل النشر: {e}")
-        await asyncio.sleep(user.interval * 60)
-
-@bot.on(events.CallbackQuery(pattern=b"stop_publish"))
-async def stop_publish(event):
-    user = users_data[event.sender_id]
-    user.active = False
-    await event.edit("🛑 تم إيقاف النشر.")
-
-@bot.on(events.CallbackQuery(pattern=b"stats"))
-async def stats(event):
-    user = users_data[event.sender_id]
-    await event.edit(
-        f"📊 **إحصائياتك**:\n"
-        f"• عدد المجموعات: {len(user.groups)}\n"
-        f"• النشر نشط: {'نعم' if user.active else 'لا'}"
-    )
-
-if __name__ == "__main__":
-    bot.run_until_disconnected()
- 
+if __name__ == '__main__':
+    # Run the bot
+    bot.run_until_disconnected() 
