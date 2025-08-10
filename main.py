@@ -19,9 +19,9 @@ from telegram.ext import (
     ConversationHandler,
     JobQueue
 )
-from telethon import TelegramClient, events
+from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
-import os
+import re
 
 # إعدادات التلجرام
 TOKEN = "7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc"
@@ -97,7 +97,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'session': None,
             'client': None,
             'groups': [],
-            'publish_count': 0
+            'publish_count': 0,
+            'phone_code_hash': None
         }
         global_stats['total_users'] += 1
     
@@ -150,7 +151,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif data == "stats":
-        user_pub = users_data[user_id]['publish_count']
+        user_pub = users_data[user_id]['publish_count'] if user_id in users_data else 0
         stats_text = (
             f"📊 **الإحصائيات**:\n\n"
             f"• إجمالي النشر: {global_stats['total_publish']}\n"
@@ -175,7 +176,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         interval = int(data)
         context.user_data['publish_interval'] = interval
         
-        if not users_data[user_id]['groups']:
+        if user_id not in users_data or not users_data[user_id]['groups']:
             await query.edit_message_text(
                 "⚠️ يجب إضافة مجموعات أولاً!",
                 reply_markup=back_button()
@@ -194,25 +195,50 @@ async def login_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     phone = update.message.text
     
+    # التحقق من صيغة الرقم
+    if not re.match(r'^\+\d{8,15}$', phone):
+        await update.message.reply_text(
+            "❌ رقم هاتف غير صحيح. يرجى إرساله بالصيغة الصحيحة: +XXXXXXXXXXX",
+            reply_markup=back_button()
+        )
+        return LOGIN
+    
     users_data[user_id]['phone'] = phone
-    client = TelegramClient(StringSession(), API_ID, API_HASH)
-    await client.connect()
     
     try:
+        # إعادة استخدام العميل إذا كان موجوداً
+        if users_data[user_id].get('client') is None:
+            client = TelegramClient(StringSession(), API_ID, API_HASH)
+            users_data[user_id]['client'] = client
+        else:
+            client = users_data[user_id]['client']
+        
+        await client.connect()
         sent = await client.send_code_request(phone)
-        users_data[user_id]['client'] = client
-        context.user_data['phone_code_hash'] = sent.phone_code_hash
+        users_data[user_id]['phone_code_hash'] = sent.phone_code_hash
         
         await update.message.reply_text(
-            "تم إرسال كود التحقق. أرسله الآن:",
+            "تم إرسال كود التحقق. أرسله الآن (5 أرقام):",
             reply_markup=back_button()
         )
         return CODE
     
+    except errors.PhoneNumberInvalidError:
+        await update.message.reply_text(
+            "❌ رقم الهاتف غير صحيح. يرجى المحاولة مرة أخرى:",
+            reply_markup=back_button()
+        )
+        return LOGIN
+    except errors.PhoneNumberBannedError:
+        await update.message.reply_text(
+            "❌ هذا الرقم محظور من قبل تيليجرام.",
+            reply_markup=back_button()
+        )
+        return LOGIN
     except Exception as e:
         logger.error(f"Login error: {e}")
         await update.message.reply_text(
-            "❌ خطأ في تسجيل الدخول. حاول مرة أخرى.",
+            f"❌ خطأ في تسجيل الدخول: {str(e)}",
             reply_markup=back_button()
         )
         return LOGIN
@@ -222,15 +248,32 @@ async def login_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     code = update.message.text.replace(" ", "")
     
+    # التحقق من صيغة الكود
+    if not code.isdigit() or len(code) != 5:
+        await update.message.reply_text(
+            "❌ كود التحقق يجب أن يكون 5 أرقام. أرسله مرة أخرى:",
+            reply_markup=back_button()
+        )
+        return CODE
+    
     client = users_data[user_id]['client']
-    phone_code_hash = context.user_data['phone_code_hash']
+    phone = users_data[user_id]['phone']
+    phone_code_hash = users_data[user_id]['phone_code_hash']
     
     try:
-        await client.sign_in(
-            phone=users_data[user_id]['phone'],
-            code=code,
-            phone_code_hash=phone_code_hash
-        )
+        # تسجيل الدخول مع التعامل مع كلمة المرور الثنائية
+        try:
+            await client.sign_in(
+                phone=phone,
+                code=code,
+                phone_code_hash=phone_code_hash
+            )
+        except errors.SessionPasswordNeededError:
+            await update.message.reply_text(
+                "🔐 الحساب محمي بكلمة مرور ثنائية. أرسل كلمة المرور:",
+                reply_markup=back_button()
+            )
+            return PASSWORD
         
         session_str = client.session.save()
         users_data[user_id]['session'] = session_str
@@ -241,13 +284,56 @@ async def login_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     
-    except Exception as e:
-        logger.error(f"Verification error: {e}")
+    except errors.PhoneCodeInvalidError:
         await update.message.reply_text(
-            "❌ كود خاطئ. حاول مرة أخرى:",
+            "❌ كود التحقق غير صحيح. أرسله مرة أخرى:",
             reply_markup=back_button()
         )
         return CODE
+    except errors.PhoneCodeExpiredError:
+        await update.message.reply_text(
+            "❌ كود التحقق منتهي الصلاحية. يرجى إعادة عملية التسجيل.",
+            reply_markup=main_keyboard()
+        )
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Verification error: {e}")
+        await update.message.reply_text(
+            f"❌ خطأ في التحقق: {str(e)}",
+            reply_markup=back_button()
+        )
+        return CODE
+
+# معالجة كلمة المرور الثنائية
+async def two_step_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    password = update.message.text
+    client = users_data[user_id]['client']
+    
+    try:
+        await client.sign_in(password=password)
+        session_str = client.session.save()
+        users_data[user_id]['session'] = session_str
+        
+        await update.message.reply_text(
+            "✅ تم تسجيل الدخول بنجاح!",
+            reply_markup=main_keyboard()
+        )
+        return ConversationHandler.END
+    
+    except errors.PasswordHashInvalidError:
+        await update.message.reply_text(
+            "❌ كلمة المرور غير صحيحة. أرسلها مرة أخرى:",
+            reply_markup=back_button()
+        )
+        return PASSWORD
+    except Exception as e:
+        logger.error(f"Password error: {e}")
+        await update.message.reply_text(
+            f"❌ خطأ في التحقق: {str(e)}",
+            reply_markup=back_button()
+        )
+        return PASSWORD
 
 # إضافة مجموعة للنشر
 async def add_supergroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -257,11 +343,13 @@ async def add_supergroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if group_identifier.startswith("https://t.me/"):
         group_identifier = group_identifier.split("/")[-1]
     
-    users_data[user_id]['groups'].append(group_identifier)
-    global_stats['total_groups'] += 1
+    # إضافة المجموعة فقط إذا لم تكن موجودة
+    if group_identifier not in users_data[user_id]['groups']:
+        users_data[user_id]['groups'].append(group_identifier)
+        global_stats['total_groups'] += 1
     
     await update.message.reply_text(
-        f"✅ تمت إضافة المجموعة: {group_identifier}\n"
+        f"✅ تمت إضافة/تحديث المجموعة: {group_identifier}\n"
         "يمكنك إضافة المزيد أو الرجوع للقائمة الرئيسية",
         reply_markup=back_button()
     )
@@ -273,6 +361,12 @@ async def start_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     interval = context.user_data['publish_interval']
     
+    # إيقاف أي نشر سابق لنفس المستخدم
+    current_jobs = context.job_queue.get_jobs_by_name(str(user_id))
+    for job in current_jobs:
+        job.schedule_removal()
+    
+    # بدء النشر الجديد
     context.job_queue.run_repeating(
         publish_message,
         interval * 60,
@@ -283,7 +377,8 @@ async def start_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(
-        f"🚀 بدأ النشر كل {interval} دقيقة!",
+        f"🚀 بدأ النشر كل {interval} دقيقة!\n"
+        "لإيقاف النشر: /stop",
         reply_markup=main_keyboard()
     )
     return ConversationHandler.END
@@ -310,7 +405,7 @@ async def publish_message(context: ContextTypes.DEFAULT_TYPE):
                 await client.send_message(group, message_text)
                 users_data[user_id]['publish_count'] += 1
                 global_stats['total_publish'] += 1
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)  # زيادة التأخير بين المجموعات
             except Exception as e:
                 logger.error(f"Publish error in {group}: {e}")
         
@@ -318,6 +413,18 @@ async def publish_message(context: ContextTypes.DEFAULT_TYPE):
     
     except Exception as e:
         logger.error(f"Client error: {e}")
+
+# إيقاف النشر
+async def stop_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    current_jobs = context.job_queue.get_jobs_by_name(str(user_id))
+    
+    if current_jobs:
+        for job in current_jobs:
+            job.schedule_removal()
+        await update.message.reply_text("⏹ تم إيقاف النشر التلقائي.")
+    else:
+        await update.message.reply_text("ℹ️ لا يوجد نشر نشط لإيقافه.")
 
 # إلغاء المحادثة
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -336,7 +443,8 @@ def main():
         entry_points=[CallbackQueryHandler(button_handler, pattern="^login$")],
         states={
             LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_phone)],
-            CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_code)]
+            CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_code)],
+            PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, two_step_password)]
         },
         fallbacks=[CallbackQueryHandler(button_handler, pattern="^back$")]
     )
@@ -364,6 +472,7 @@ def main():
     
     # إضافة المعالجات
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stop", stop_publishing))
     application.add_handler(login_conv)
     application.add_handler(super_conv)
     application.add_handler(publish_conv)
@@ -373,4 +482,4 @@ def main():
     application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main() 
