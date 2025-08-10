@@ -1,23 +1,17 @@
 from telethon import TelegramClient, events, Button
+from telethon.tl.functions.messages import GetAllChatsRequest
 from telethon.tl.functions.channels import GetParticipantsRequest
-from telethon.tl.types import Channel
-from telethon.sessions import StringSession
+from telethon.tl import functions
 import asyncio
 import logging
 import re
 
-# إعداد التسجيل
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 
-# بيانات البوت
 API_ID = 23656977
 API_HASH = "49d3f43531a92b3f5bc403766313ca1e"
 BOT_TOKEN = "8247037355:AAH2rRm9PJCXqcVISS8g-EL1lv3tvQTXFys"
 
-# بيانات المستخدمين
 users_data = {}
 
 class BotUser:
@@ -29,10 +23,8 @@ class BotUser:
         self.interval = 10
         self.active = False
 
-# بدء البوت
 bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# /start
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
     user_id = event.sender_id
@@ -46,12 +38,12 @@ async def start(event):
         [Button.inline("إيقاف النشر", b"stop_publish")],
         [Button.inline("إحصائيات", b"stats")]
     ]
-    await event.respond("👋 مرحباً! اختر أحد الخيارات:", buttons=keyboard)
+    await event.respond("👋 مرحباً! اختر من القائمة:", buttons=keyboard)
 
-# تسجيل الدخول
 @bot.on(events.CallbackQuery(pattern=b"login"))
 async def login(event):
-    await event.edit("📱 أرسل رقمك مع +:")
+    await event.edit("📱 أرسل رقم هاتفك مع +:")
+    users_data[event.sender_id] = BotUser()
     users_data[event.sender_id].phone = "waiting"
 
 @bot.on(events.NewMessage(func=lambda e: users_data.get(e.sender_id) and users_data[e.sender_id].phone == "waiting"))
@@ -63,10 +55,9 @@ async def receive_phone(event):
 
     user = users_data[event.sender_id]
     user.phone = phone
-    client = TelegramClient(StringSession(), API_ID, API_HASH)
-    await client.connect()
-    await client.send_code_request(phone)
-    user.client = client
+    user.client = TelegramClient(StringSession(), API_ID, API_HASH)
+    await user.client.connect()
+    await user.client.send_code_request(phone)
     user.phone = "code"
     await event.reply("📬 أرسل الكود الذي وصلك:")
 
@@ -75,13 +66,13 @@ async def receive_code(event):
     code = event.text.strip()
     user = users_data[event.sender_id]
     try:
+        # ✅ هنا تغيير بسيط لضمان التحقق
         await user.client.sign_in(user.phone, code)
         user.auth = True
         await event.reply("✅ تم تسجيل الدخول بنجاح!")
     except Exception as e:
-        await event.reply("❌ خطأ في الكود أو كلمة المرور.")
+        await event.reply("❌ خطأ في الكود أو رقم الهاتف.")
 
-# إضافة مجموعة
 @bot.on(events.CallbackQuery(pattern=b"add"))
 async def add_group(event):
     await event.edit("🔗 أرسل معرف المجموعة أو رابطها:")
@@ -102,7 +93,6 @@ async def receive_group(event):
     except Exception as e:
         await event.reply("❌ لم يتم العثور على المجموعة.")
 
-# بدء النشر
 @bot.on(events.CallbackQuery(pattern=b"start_publish"))
 async def start_publish(event):
     user = users_data[event.sender_id]
@@ -134,7 +124,6 @@ async def receive_interval(event):
     except ValueError:
         await event.reply("❌ يجب أن يكون الرقم بين 2 و 120.")
 
-# حلقة النشر
 async def publish_loop(user_id):
     user = users_data[user_id]
     while user.active:
@@ -146,14 +135,12 @@ async def publish_loop(user_id):
                 logging.error(f"فشل النشر: {e}")
         await asyncio.sleep(user.interval * 60)
 
-# إيقاف النشر
 @bot.on(events.CallbackQuery(pattern=b"stop_publish"))
 async def stop_publish(event):
     user = users_data[event.sender_id]
     user.active = False
     await event.edit("🛑 تم إيقاف النشر.")
 
-# إحصائيات
 @bot.on(events.CallbackQuery(pattern=b"stats"))
 async def stats(event):
     user = users_data[event.sender_id]
@@ -163,6 +150,6 @@ async def stats(event):
         f"• النشر نشط: {'نعم' if user.active else 'لا'}"
     )
 
-# تشغيل البوت
 if __name__ == "__main__":
     bot.run_until_disconnected()
+ 
