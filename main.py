@@ -18,11 +18,15 @@ from telegram.ext import (
 )
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
+from telethon.tl.functions.channels import GetParticipantRequest
+from telethon.tl.types import InputPeerChannel, InputPeerUser
 
 # إعدادات التلجرام
 TOKEN = "7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc"
 API_ID = 23656977
 API_HASH = "49d3f43531a92b3f5bc403766313ca1e"
+# قنوات الاشتراك الإجباري
+REQUIRED_CHANNELS = ['crazys7', 'AWU87']
 
 # حالات المحادثة
 LOGIN, PHONE, CODE, ADD_SUPER, PUBLISH_INTERVAL, PASSWORD = range(6)
@@ -97,10 +101,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         global_stats['total_users'] += 1
     
+    # إرسال روابط الاشتراك الإجباري
+    channels_text = "\n".join([f"https://t.me/{channel}" for channel in REQUIRED_CHANNELS])
     await update.message.reply_text(
-        "مرحباً! اختر أحد الخيارات:",
+        f"مرحباً! قبل البدء، يرجى الاشتراك في القنوات التالية:\n{channels_text}\n\n"
+        "بعد الاشتراك اختر أحد الخيارات:",
         reply_markup=main_keyboard()
     )
+
+# دالة للتحقق من اشتراك المستخدم في القنوات
+async def check_subscription(client, user_id):
+    """
+    التحقق من أن المستخدم مشترك في القنوات المطلوبة.
+    """
+    for channel in REQUIRED_CHANNELS:
+        try:
+            # جلب كيان القناة
+            entity = await client.get_entity(channel)
+            
+            # التحقق من اشتراك المستخدم
+            await client(GetParticipantRequest(
+                channel=entity,
+                participant=user_id
+            ))
+        except errors.UserNotParticipantError:
+            return False
+        except Exception as e:
+            logger.error(f"Error checking subscription in {channel}: {e}")
+            return False
+    return True
 
 # معالجة أزرار Inline
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,7 +147,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data == "add_super":
         await query.edit_message_text(
-            "أرسل رابط أو معرف المجموعة (يجب أن تكون مشرفاً):",
+            "أرسل رابط أو معرف المجموعة (يجب أن تكون عضوًا فيها):",
             reply_markup=back_button()
         )
         return ADD_SUPER
@@ -131,12 +160,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return PUBLISH_INTERVAL
     
     elif data == "help":
+        channels_text = "\n".join([f"   - @{channel}" for channel in REQUIRED_CHANNELS])
         help_text = (
             "❖ **مساعدة استخدام البوت**:\n\n"
             "1. تسجيل الدخول: أضف رقم هاتفك للحصول على كود التحقق\n"
             "2. إضافة سوبر: أضف المجموعات التي تريد النشر فيها\n"
             "3. بدء النشر: اختر الفترة الزمنية وابدأ النشر التلقائي\n\n"
             "✪ تحذير: لا تشارك كود التحقق مع أحد\n"
+            "✪ يجب الاشتراك في القنوات التالية:\n"
+            f"{channels_text}\n\n"
             "✪ المطور: @Ili8_8ill"
         )
         await query.edit_message_text(
@@ -370,7 +402,6 @@ async def start_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user_id,
         data=message_text,
         name=str(user_id)
-    )  # تم إصلاح الخطأ هنا
     
     await update.message.reply_text(
         f"🚀 بدأ النشر كل {interval} دقيقة!\n"
@@ -396,9 +427,40 @@ async def publish_message(context: ContextTypes.DEFAULT_TYPE):
         )
         await client.connect()
         
+        # التحقق من الاشتراك في القنوات المطلوبة
+        try:
+            is_subscribed = await check_subscription(client, user_id)
+        except Exception as e:
+            logger.error(f"Subscription check error: {e}")
+            is_subscribed = False
+            
+        if not is_subscribed:
+            # إرسال رسالة تذكير للمستخدم
+            channels_text = ", ".join([f"@{channel}" for channel in REQUIRED_CHANNELS])
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"❌ يجب الاشتراك في القنوات التالية: {channels_text} لمواصلة النشر."
+            )
+            await client.disconnect()
+            return
+        
         for group in users_data[user_id]['groups']:
             try:
-                await client.send_message(group, message_text)
+                # جلب كيان المجموعة
+                entity = await client.get_entity(group)
+                
+                # التحقق من أن المستخدم عضو في المجموعة
+                try:
+                    await client(GetParticipantRequest(
+                        channel=entity,
+                        participant=user_id
+                    ))
+                except errors.UserNotParticipantError:
+                    logger.warning(f"User {user_id} is not a member of {group}. Skipping.")
+                    continue
+                
+                # النشر في المجموعة
+                await client.send_message(entity, message_text)
                 users_data[user_id]['publish_count'] += 1
                 global_stats['total_publish'] += 1
                 await asyncio.sleep(10)  # زيادة التأخير بين المجموعات
@@ -470,4 +532,4 @@ def main():
     application.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
