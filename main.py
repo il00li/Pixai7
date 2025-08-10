@@ -164,8 +164,5 @@ async def stats(event):
     )
 
 # تشغيل البوت
-async def main():
-    await bot.run_until_disconnected()
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    bot.run_until_disconnected()
