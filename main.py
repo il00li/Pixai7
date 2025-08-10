@@ -1,13 +1,10 @@
 import asyncio
 import logging
-from datetime import datetime
+import re
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove
 )
 from telegram.ext import (
     Application,
@@ -21,7 +18,6 @@ from telegram.ext import (
 )
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
-import re
 
 # إعدادات التلجرام
 TOKEN = "7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc"
@@ -29,13 +25,12 @@ API_ID = 23656977
 API_HASH = "49d3f43531a92b3f5bc403766313ca1e"
 
 # حالات المحادثة
-LOGIN, PHONE, CODE, ADD_SUPER, PUBLISH_INTERVAL = range(5)
+LOGIN, PHONE, CODE, ADD_SUPER, PUBLISH_INTERVAL, PASSWORD = range(6)
 
 # تخزين البيانات
 users_data = {}
 global_stats = {
     'total_publish': 0,
-    'user_publish': {},
     'total_users': 0,
     'total_groups': 0
 }
@@ -151,7 +146,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif data == "stats":
-        user_pub = users_data[user_id]['publish_count'] if user_id in users_data else 0
+        user_pub = users_data.get(user_id, {}).get('publish_count', 0)
         stats_text = (
             f"📊 **الإحصائيات**:\n\n"
             f"• إجمالي النشر: {global_stats['total_publish']}\n"
@@ -344,9 +339,10 @@ async def add_supergroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_identifier = group_identifier.split("/")[-1]
     
     # إضافة المجموعة فقط إذا لم تكن موجودة
-    if group_identifier not in users_data[user_id]['groups']:
-        users_data[user_id]['groups'].append(group_identifier)
-        global_stats['total_groups'] += 1
+    if user_id in users_data:
+        if group_identifier not in users_data[user_id]['groups']:
+            users_data[user_id]['groups'].append(group_identifier)
+            global_stats['total_groups'] += 1
     
     await update.message.reply_text(
         f"✅ تمت إضافة/تحديث المجموعة: {group_identifier}\n"
@@ -374,7 +370,6 @@ async def start_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user_id,
         data=message_text,
         name=str(user_id)
-    )
     
     await update.message.reply_text(
         f"🚀 بدأ النشر كل {interval} دقيقة!\n"
@@ -389,7 +384,7 @@ async def publish_message(context: ContextTypes.DEFAULT_TYPE):
     user_id = job.user_id
     message_text = job.data
     
-    if user_id not in users_data or not users_data[user_id]['session']:
+    if user_id not in users_data or not users_data[user_id].get('session'):
         return
     
     try:
@@ -425,14 +420,6 @@ async def stop_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏹ تم إيقاف النشر التلقائي.")
     else:
         await update.message.reply_text("ℹ️ لا يوجد نشر نشط لإيقافه.")
-
-# إلغاء المحادثة
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "تم الإلغاء.",
-        reply_markup=main_keyboard()
-    )
-    return ConversationHandler.END
 
 # الدالة الرئيسية
 def main():
@@ -482,4 +469,4 @@ def main():
     application.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
