@@ -580,4 +580,4 @@ if __name__ == '__main__':
     os.makedirs('sessions', exist_ok=True)
     
     print("جارٍ تشغيل بوت النشر التلقائي...")
-    bot.run_until_disconnected()
+    bot.run_until_disconnected() 
