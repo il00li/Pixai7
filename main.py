@@ -19,7 +19,6 @@ from telegram.ext import (
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import GetParticipantRequest
-from telethon.tl.types import InputPeerChannel, InputPeerUser
 
 # إعدادات التلجرام
 TOKEN = "7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc"
@@ -402,6 +401,7 @@ async def start_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user_id,
         data=message_text,
         name=str(user_id)
+    )
     
     await update.message.reply_text(
         f"🚀 بدأ النشر كل {interval} دقيقة!\n"
@@ -532,4 +532,4 @@ def main():
     application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main() 
