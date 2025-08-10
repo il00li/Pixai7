@@ -370,6 +370,7 @@ async def start_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user_id,
         data=message_text,
         name=str(user_id)
+    )  # تم إصلاح الخطأ هنا
     
     await update.message.reply_text(
         f"🚀 بدأ النشر كل {interval} دقيقة!\n"
@@ -469,4 +470,4 @@ def main():
     application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main() 
