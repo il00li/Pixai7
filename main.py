@@ -1,535 +1,404 @@
 import asyncio
 import logging
 import re
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    ConversationHandler,
-    JobQueue
-)
-from telethon import TelegramClient, errors
-from telethon.sessions import StringSession
-from telethon.tl.functions.channels import GetParticipantRequest
+import string
+import random
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Optional
 
-# إعدادات التلجرام
-TOKEN = "7966976239:AAEy5WkQDszmVbuInTnuOyUXskhyO7ak9Nc"
-API_ID = 23656977
-API_HASH = "49d3f43531a92b3f5bc403766313ca1e"
-# قنوات الاشتراك الإجباري
-REQUIRED_CHANNELS = ['crazys7', 'AWU87']
+import telethon
+from telethon import TelegramClient, events
+from telethon.tl.functions.messages import GetAllChatsRequest
+from telethon.tl.functions.channels import GetParticipantsRequest
+from telethon.tl.types import ChannelParticipant, Channel, ChatInviteExported
+from telethon.errors import (FloodWaitError, PhoneNumberInvalidError, 
+                            SessionPasswordNeededError, UserNotParticipantError)
 
-# حالات المحادثة
-LOGIN, PHONE, CODE, ADD_SUPER, PUBLISH_INTERVAL, PASSWORD = range(6)
-
-# تخزين البيانات
-users_data = {}
-global_stats = {
-    'total_publish': 0,
-    'total_users': 0,
-    'total_groups': 0
-}
-
-# إعداد التسجيل
+# Configure logging
 logging.basicConfig(
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    handlers=[logging.FileHandler('bot.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-# لوحة المفاتيح الرئيسية
-def main_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("═ LOGIN | تسجيل ═", callback_data="login")
-        ],
-        [
-            InlineKeyboardButton("بدء النشر", callback_data="start_publish"),
-            InlineKeyboardButton("اضف سوبر", callback_data="add_super")
-        ],
-        [
-            InlineKeyboardButton("مساعدة", callback_data="help"),
-            InlineKeyboardButton("احصائيات", callback_data="stats")
-        ]
-    ])
+# Configuration constants
+BOT_TOKEN = "8247037355:AAH2rRm9PJCXqcVISS8g-EL1lv3tvQTXFys"
+API_ID = "23656977"
+API_HASH = "49d3f43531a92b3f5bc403766313ca1e"
+REQUIRED_CHANNELS = ["@crazys7", "@AWU87"]
 
-# لوحة فترات النشر
-def interval_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("2 دقائق", callback_data="2"),
-            InlineKeyboardButton("5 دقائق", callback_data="5"),
-            InlineKeyboardButton("10 دقائق", callback_data="10")
-        ],
-        [
-            InlineKeyboardButton("20 دقيقة", callback_data="20"),
-            InlineKeyboardButton("30 دقيقة", callback_data="30"),
-            InlineKeyboardButton("60 دقيقة", callback_data="60")
-        ],
-        [
-            InlineKeyboardButton("120 دقيقة", callback_data="120"),
-            InlineKeyboardButton("رجوع", callback_data="back")
-        ]
-    ])
+# Data structures
+class BotUser:
+    def __init__(self):
+        self.phone = None
+        self.code = None
+        self.password = None
+        self.auth_key = None
+        self.groups = []
+        self.publish_interval = 10  # in minutes
+        self.publishing_active = False
+        self.publish_count = 0
 
-# زر الرجوع
-def back_button():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("رجوع", callback_data="back")]
-    ])
+users_data: Dict[int, BotUser] = {}  # user_id: BotUser
+global_stats = {
+    "total_publishes": 0,
+    "total_users": 0,
+    "total_groups": 0
+}
 
-# بدء البوت
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in users_data:
-        users_data[user_id] = {
-            'phone': None,
-            'session': None,
-            'client': None,
-            'groups': [],
-            'publish_count': 0,
-            'phone_code_hash': None
-        }
-        global_stats['total_users'] += 1
-    
-    # إرسال روابط الاشتراك الإجباري
-    channels_text = "\n".join([f"https://t.me/{channel}" for channel in REQUIRED_CHANNELS])
-    await update.message.reply_text(
-        f"مرحباً! قبل البدء، يرجى الاشتراك في القنوات التالية:\n{channels_text}\n\n"
-        "بعد الاشتراك اختر أحد الخيارات:",
-        reply_markup=main_keyboard()
-    )
-
-# دالة للتحقق من اشتراك المستخدم في القنوات
-async def check_subscription(client, user_id):
-    """
-    التحقق من أن المستخدم مشترك في القنوات المطلوبة.
-    """
-    for channel in REQUIRED_CHANNELS:
-        try:
-            # جلب كيان القناة
-            entity = await client.get_entity(channel)
-            
-            # التحقق من اشتراك المستخدم
-            await client(GetParticipantRequest(
-                channel=entity,
-                participant=user_id
-            ))
-        except errors.UserNotParticipantError:
-            return False
-        except Exception as e:
-            logger.error(f"Error checking subscription in {channel}: {e}")
-            return False
-    return True
-
-# معالجة أزرار Inline
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user_id = query.from_user.id
-    
-    if data == "login":
-        await query.edit_message_text(
-            "أرسل رقم هاتفك مع رمز الدولة (مثال: +20123456789):",
-            reply_markup=back_button()
-        )
-        return LOGIN
-    
-    elif data == "add_super":
-        await query.edit_message_text(
-            "أرسل رابط أو معرف المجموعة (يجب أن تكون عضوًا فيها):",
-            reply_markup=back_button()
-        )
-        return ADD_SUPER
-    
-    elif data == "start_publish":
-        await query.edit_message_text(
-            "اختر الفترة الزمنية بين النشرات:",
-            reply_markup=interval_keyboard()
-        )
-        return PUBLISH_INTERVAL
-    
-    elif data == "help":
-        channels_text = "\n".join([f"   - @{channel}" for channel in REQUIRED_CHANNELS])
-        help_text = (
-            "❖ **مساعدة استخدام البوت**:\n\n"
-            "1. تسجيل الدخول: أضف رقم هاتفك للحصول على كود التحقق\n"
-            "2. إضافة سوبر: أضف المجموعات التي تريد النشر فيها\n"
-            "3. بدء النشر: اختر الفترة الزمنية وابدأ النشر التلقائي\n\n"
-            "✪ تحذير: لا تشارك كود التحقق مع أحد\n"
-            "✪ يجب الاشتراك في القنوات التالية:\n"
-            f"{channels_text}\n\n"
-            "✪ المطور: @Ili8_8ill"
-        )
-        await query.edit_message_text(
-            help_text,
-            parse_mode="Markdown",
-            reply_markup=back_button()
-        )
-    
-    elif data == "stats":
-        user_pub = users_data.get(user_id, {}).get('publish_count', 0)
-        stats_text = (
-            f"📊 **الإحصائيات**:\n\n"
-            f"• إجمالي النشر: {global_stats['total_publish']}\n"
-            f"• نشراتك: {user_pub}\n"
-            f"• المستخدمين: {global_stats['total_users']}\n"
-            f"• المجموعات: {global_stats['total_groups']}"
-        )
-        await query.edit_message_text(
-            stats_text,
-            parse_mode="Markdown",
-            reply_markup=back_button()
-        )
-    
-    elif data == "back":
-        await query.edit_message_text(
-            "اختر أحد الخيارات:",
-            reply_markup=main_keyboard()
-        )
-        return ConversationHandler.END
-    
-    elif data in ["2", "5", "10", "20", "30", "60", "120"]:
-        interval = int(data)
-        context.user_data['publish_interval'] = interval
-        
-        if user_id not in users_data or not users_data[user_id]['groups']:
-            await query.edit_message_text(
-                "⚠️ يجب إضافة مجموعات أولاً!",
-                reply_markup=back_button()
-            )
-            return
-        
-        await query.edit_message_text(
-            f"⏱ تم ضبط النشر كل {interval} دقيقة\n"
-            "أرسل الرسالة التي تريد نشرها:",
-            reply_markup=back_button()
-        )
-        return PUBLISH_INTERVAL
-
-# معالجة تسجيل الدخول
-async def login_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    phone = update.message.text
-    
-    # التحقق من صيغة الرقم
-    if not re.match(r'^\+\d{8,15}$', phone):
-        await update.message.reply_text(
-            "❌ رقم هاتف غير صحيح. يرجى إرساله بالصيغة الصحيحة: +XXXXXXXXXXX",
-            reply_markup=back_button()
-        )
-        return LOGIN
-    
-    users_data[user_id]['phone'] = phone
-    
+# Helper functions
+async def generate_string_session(client: TelegramClient) -> str:
+    """Generate string session for user authentication"""
     try:
-        # إعادة استخدام العميل إذا كان موجوداً
-        if users_data[user_id].get('client') is None:
-            client = TelegramClient(StringSession(), API_ID, API_HASH)
-            users_data[user_id]['client'] = client
-        else:
-            client = users_data[user_id]['client']
-        
         await client.connect()
-        sent = await client.send_code_request(phone)
-        users_data[user_id]['phone_code_hash'] = sent.phone_code_hash
-        
-        await update.message.reply_text(
-            "تم إرسال كود التحقق. أرسله الآن (5 أرقام):",
-            reply_markup=back_button()
-        )
-        return CODE
-    
-    except errors.PhoneNumberInvalidError:
-        await update.message.reply_text(
-            "❌ رقم الهاتف غير صحيح. يرجى المحاولة مرة أخرى:",
-            reply_markup=back_button()
-        )
-        return LOGIN
-    except errors.PhoneNumberBannedError:
-        await update.message.reply_text(
-            "❌ هذا الرقم محظور من قبل تيليجرام.",
-            reply_markup=back_button()
-        )
-        return LOGIN
+        await client.start()
+        return await client.session.save()
     except Exception as e:
-        logger.error(f"Login error: {e}")
-        await update.message.reply_text(
-            f"❌ خطأ في تسجيل الدخول: {str(e)}",
-            reply_markup=back_button()
-        )
-        return LOGIN
+        logger.error(f"Error generating string session: {e}")
+        return None
 
-# معالجة كود التحقق
-async def login_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    code = update.message.text.replace(" ", "")
-    
-    # التحقق من صيغة الكود
-    if not code.isdigit() or len(code) != 5:
-        await update.message.reply_text(
-            "❌ كود التحقق يجب أن يكون 5 أرقام. أرسله مرة أخرى:",
-            reply_markup=back_button()
-        )
-        return CODE
-    
-    client = users_data[user_id]['client']
-    phone = users_data[user_id]['phone']
-    phone_code_hash = users_data[user_id]['phone_code_hash']
-    
+async def is_subscribed(client: TelegramClient, channel: str) -> bool:
+    """Check if user is subscribed to a channel"""
     try:
-        # تسجيل الدخول مع التعامل مع كلمة المرور الثنائية
-        try:
-            await client.sign_in(
-                phone=phone,
-                code=code,
-                phone_code_hash=phone_code_hash
-            )
-        except errors.SessionPasswordNeededError:
-            await update.message.reply_text(
-                "🔐 الحساب محمي بكلمة مرور ثنائية. أرسل كلمة المرور:",
-                reply_markup=back_button()
-            )
-            return PASSWORD
-        
-        session_str = client.session.save()
-        users_data[user_id]['session'] = session_str
-        
-        await update.message.reply_text(
-            "✅ تم تسجيل الدخول بنجاح!",
-            reply_markup=main_keyboard()
-        )
-        return ConversationHandler.END
-    
-    except errors.PhoneCodeInvalidError:
-        await update.message.reply_text(
-            "❌ كود التحقق غير صحيح. أرسله مرة أخرى:",
-            reply_markup=back_button()
-        )
-        return CODE
-    except errors.PhoneCodeExpiredError:
-        await update.message.reply_text(
-            "❌ كود التحقق منتهي الصلاحية. يرجى إعادة عملية التسجيل.",
-            reply_markup=main_keyboard()
-        )
-        return ConversationHandler.END
+        result = await client.get_entity(channel)
+        if not isinstance(result, telethon.tl.types.Channel):
+            return False
+        participant = await client(GetParticipantsRequest(channel=result, limit=1))
+        return any(participant.participants)
     except Exception as e:
-        logger.error(f"Verification error: {e}")
-        await update.message.reply_text(
-            f"❌ خطأ في التحقق: {str(e)}",
-            reply_markup=back_button()
-        )
-        return CODE
+        logger.error(f"Error checking subscription to {channel}: {e}")
+        return False
 
-# معالجة كلمة المرور الثنائية
-async def two_step_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    password = update.message.text
-    client = users_data[user_id]['client']
-    
+async def validate_phone_number(phone: str) -> bool:
+    """Validate phone number format"""
+    pattern = r'^\+\d{10,15}$'
+    return bool(re.match(pattern, phone))
+
+async def check_group_membership(client: TelegramClient, group_id: int) -> bool:
+    """Check if user is a member of a group"""
     try:
-        await client.sign_in(password=password)
-        session_str = client.session.save()
-        users_data[user_id]['session'] = session_str
-        
-        await update.message.reply_text(
-            "✅ تم تسجيل الدخول بنجاح!",
-            reply_markup=main_keyboard()
-        )
-        return ConversationHandler.END
-    
-    except errors.PasswordHashInvalidError:
-        await update.message.reply_text(
-            "❌ كلمة المرور غير صحيحة. أرسلها مرة أخرى:",
-            reply_markup=back_button()
-        )
-        return PASSWORD
+        group = await client.get_entity(group_id)
+        if not isinstance(group, telethon.tl.types.Channel):
+            return False
+        participant = await client(GetParticipantsRequest(channel=group, limit=1))
+        return any(participant.participants)
     except Exception as e:
-        logger.error(f"Password error: {e}")
-        await update.message.reply_text(
-            f"❌ خطأ في التحقق: {str(e)}",
-            reply_markup=back_button()
-        )
-        return PASSWORD
+        logger.error(f"Error checking group membership: {e}")
+        return False
 
-# إضافة مجموعة للنشر
-async def add_supergroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    group_identifier = update.message.text
-    
-    if group_identifier.startswith("https://t.me/"):
-        group_identifier = group_identifier.split("/")[-1]
-    
-    # إضافة المجموعة فقط إذا لم تكن موجودة
-    if user_id in users_data:
-        if group_identifier not in users_data[user_id]['groups']:
-            users_data[user_id]['groups'].append(group_identifier)
-            global_stats['total_groups'] += 1
-    
-    await update.message.reply_text(
-        f"✅ تمت إضافة/تحديث المجموعة: {group_identifier}\n"
-        "يمكنك إضافة المزيد أو الرجوع للقائمة الرئيسية",
-        reply_markup=back_button()
-    )
-    return ADD_SUPER
+# Bot initialization
+bot = TelegramClient('auto_publish_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# بدء النشر التلقائي
-async def start_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    message_text = update.message.text
-    interval = context.user_data['publish_interval']
+@bot.on(events.NewMessage(pattern='/start'))
+async def start(event):
+    """Handle /start command"""
+    user_id = event.sender_id
+    if user_id not in users_data:
+        users_data[user_id] = BotUser()
+        global_stats["total_users"] += 1
     
-    # إيقاف أي نشر سابق لنفس المستخدم
-    current_jobs = context.job_queue.get_jobs_by_name(str(user_id))
-    for job in current_jobs:
-        job.schedule_removal()
+    keyboard = [
+        [Button.inline("تسجيل دخول", data="login")],
+        [Button.inline("بدء النشر", data="publish")],
+        [Button.inline("إضافة مجموعات", data="add_groups")],
+        [Button.inline("إحصائيات", data="stats")],
+        [Button.inline("مساعدة", data="help")]
+    ]
     
-    # بدء النشر الجديد
-    context.job_queue.run_repeating(
-        publish_message,
-        interval * 60,
-        first=0,
-        user_id=user_id,
-        data=message_text,
-        name=str(user_id)
+    await event.respond(
+        "👋 **مرحبًا!** أنا بوت النشر التلقائي. اختر من الخيارات أدناه:",
+        buttons=keyboard
     )
-    
-    await update.message.reply_text(
-        f"🚀 بدأ النشر كل {interval} دقيقة!\n"
-        "لإيقاف النشر: /stop",
-        reply_markup=main_keyboard()
-    )
-    return ConversationHandler.END
 
-# وظيفة النشر الفعلية
-async def publish_message(context: ContextTypes.DEFAULT_TYPE):
-    job = context.job
-    user_id = job.user_id
-    message_text = job.data
+# Login flow
+@bot.on(events.CallbackQuery(data=b'login'))
+async def login_flow(event):
+    """Start login flow"""
+    user_id = event.sender_id
+    await event.edit(
+        "📝 **تسجيل الدخول**\n\nيرجى إرسال رقم هاتفك (+XXXXXXXXXX):",
+        buttons=None
+    )
+    users_data[user_id].current_state = "LOGIN_PHONE"
+
+@bot.on(events.NewMessage(func=lambda e: getattr(e.sender_id, 'current_state', None) == 'LOGIN_PHONE'))
+async def login_phone(event):
+    """Handle phone number input"""
+    user_id = event.sender_id
+    phone = event.text
     
-    if user_id not in users_data or not users_data[user_id].get('session'):
+    if not await validate_phone_number(phone):
+        await event.respond("❌ **رقم الهاتف غير صالح!** يرجى إعادة المحاولة.")
         return
     
     try:
-        client = TelegramClient(
-            StringSession(users_data[user_id]['session']),
-            API_ID,
-            API_HASH
-        )
+        client = TelegramClient(StringSession(), API_ID, API_HASH)
         await client.connect()
+        await client.send_code_request(phone)
         
-        # التحقق من الاشتراك في القنوات المطلوبة
-        try:
-            is_subscribed = await check_subscription(client, user_id)
-        except Exception as e:
-            logger.error(f"Subscription check error: {e}")
-            is_subscribed = False
-            
-        if not is_subscribed:
-            # إرسال رسالة تذكير للمستخدم
-            channels_text = ", ".join([f"@{channel}" for channel in REQUIRED_CHANNELS])
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"❌ يجب الاشتراك في القنوات التالية: {channels_text} لمواصلة النشر."
-            )
-            await client.disconnect()
+        users_data[user_id].phone = phone
+        users_data[user_id].current_state = "LOGIN_CODE"
+        users_data[user_id].client = client
+        
+        await event.respond("💬 **تم إرسال كود التحقق.** يرجى إدخال الكود:")
+    except Exception as e:
+        logger.error(f"Error during login: {e}")
+        await event.respond("❌ **حدث خطأ أثناء تسجيل الدخول.** يرجى المحاولة مرة أخرى.")
+
+@bot.on(events.NewMessage(func=lambda e: getattr(e.sender_id, 'current_state', None) == 'LOGIN_CODE'))
+async def login_code(event):
+    """Handle verification code input"""
+    user_id = event.sender_id
+    code = event.text
+    client = users_data[user_id].client
+    
+    try:
+        user = await client.sign_in(user_id.phone, code)
+        
+        # Handle 2FA if required
+        if await client.is_password_needed():
+            users_data[user_id].current_state = "LOGIN_2FA"
+            await event.respond("🔐 **مطلوب كلمة مرور الحماية二段階認証.** يرجى إدخالها:")
             return
         
-        for group in users_data[user_id]['groups']:
-            try:
-                # جلب كيان المجموعة
-                entity = await client.get_entity(group)
-                
-                # التحقق من أن المستخدم عضو في المجموعة
-                try:
-                    await client(GetParticipantRequest(
-                        channel=entity,
-                        participant=user_id
-                    ))
-                except errors.UserNotParticipantError:
-                    logger.warning(f"User {user_id} is not a member of {group}. Skipping.")
-                    continue
-                
-                # النشر في المجموعة
-                await client.send_message(entity, message_text)
-                users_data[user_id]['publish_count'] += 1
-                global_stats['total_publish'] += 1
-                await asyncio.sleep(10)  # زيادة التأخير بين المجموعات
-            except Exception as e:
-                logger.error(f"Publish error in {group}: {e}")
+        # Generate string session
+        string_session = await generate_string_session(client)
+        users_data[user_id].auth_key = string_session
         
-        await client.disconnect()
-    
+        await event.respond("🎉 **تم تسجيل الدخول بنجاح!**")
+    except SessionPasswordNeededError:
+        users_data[user_id].current_state = "LOGIN_2FA"
+        await event.respond("🔐 **مطلوب كلمة مرور الحماية二段階認証.** يرجى إدخالها:")
     except Exception as e:
-        logger.error(f"Client error: {e}")
+        logger.error(f"Error during code verification: {e}")
+        await event.respond("❌ **كود التحقق غير صحيح!** يرجى إعادة المحاولة.")
 
-# إيقاف النشر
-async def stop_publishing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    current_jobs = context.job_queue.get_jobs_by_name(str(user_id))
+@bot.on(events.NewMessage(func=lambda e: getattr(e.sender_id, 'current_state', None) == 'LOGIN_2FA'))
+async def login_2fa(event):
+    """Handle 2FA password input"""
+    user_id = event.sender_id
+    password = event.text
+    client = users_data[user_id].client
     
-    if current_jobs:
-        for job in current_jobs:
-            job.schedule_removal()
-        await update.message.reply_text("⏹ تم إيقاف النشر التلقائي.")
+    try:
+        await client.sign_in(password=password)
+        string_session = await generate_string_session(client)
+        users_data[user_id].auth_key = string_session
+        
+        await event.respond("🎉 **تم تسجيل الدخول بنجاح!**")
+    except Exception as e:
+        logger.error(f"Error during 2FA verification: {e}")
+        await event.respond("❌ **كلمة المرور غير صحيحة!** يرجى إعادة المحاولة.")
+
+# Group management
+@bot.on(events.CallbackQuery(data=b'add_groups'))
+async def add_groups_flow(event):
+    """Start adding groups flow"""
+    user_id = event.sender_id
+    if not users_data[user_id].auth_key:
+        await event.edit("⚠️ **يرجى تسجيل الدخول أولاً!**")
+        return
+    
+    await event.edit(
+        "➕ **إضافة مجموعات**\n\nيرجى إرسال معرف أو رابط المجموعة:"
+    )
+    users_data[user_id].current_state = "ADD_GROUP"
+
+@bot.on(events.NewMessage(func=lambda e: getattr(e.sender_id, 'current_state', None) == 'ADD_GROUP'))
+async def add_group(event):
+    """Handle group addition"""
+    user_id = event.sender_id
+    group_link = event.text
+    client = users_data[user_id].client
+    
+    try:
+        group = await client.get_entity(group_link)
+        
+        # Check if it's a channel or group
+        if not (isinstance(group, telethon.tl.types.Channel) or 
+                isinstance(group, telethon.tl.types.Chat)):
+            await event.respond("❌ **الرابط غير صالح!** يرجى التحقق من معرف المجموعة.")
+            return
+        
+        # Check membership
+        if not await check_group_membership(client, group.id):
+            await event.respond("❌ **أنت لست عضوًا في هذه المجموعة!**")
+            return
+        
+        users_data[user_id].groups.append(group.id)
+        global_stats["total_groups"] += 1
+        
+        await event.respond(f"✅ **تم إضافة المجموعة:** {group.title}")
+    except Exception as e:
+        logger.error(f"Error adding group: {e}")
+        await event.respond("❌ **حدث خطأ.** يرجى التحقق من الرابط ومباركة مجددا.")
+
+# Publishing workflow
+@bot.on(events.CallbackQuery(data=b'publish'))
+async def publish_flow(event):
+    """Start publishing flow"""
+    user_id = event.sender_id
+    
+    # Check if user is logged in
+    if not users_data[user_id].auth_key:
+        await event.edit("⚠️ **يرجى تسجيل الدخول أولاً!**")
+        return
+    
+    # Check mandatory channel subscription
+    client = users_data[user_id].client
+    if not all(await asyncio.gather(*[is_subscribed(client, ch) for ch in REQUIRED_CHANNELS])):
+        await event.edit("❌ **يرجى الاشتراك في القنوات المطلوبة:** " + " و ".join(REQUIRED_CHANNELS))
+        return
+    
+    # If no groups added
+    if not users_data[user_id].groups:
+        await event.edit("❌ **لم تقم بإضافة أي مجموعات!**")
+        return
+    
+    await event.edit(
+        "📝 **إعدادات النشر**\n\nيرجى إرسال المحتوى الذي تريد نشره:",
+        buttons=None
+    )
+    users_data[user_id].current_state = "PUBLISH_CONTENT"
+
+@bot.on(events.NewMessage(func=lambda e: getattr(e.sender_id, 'current_state', None) == 'PUBLISH_CONTENT'))
+async def publish_content(event):
+    """Handle publication content"""
+    user_id = event.sender_id
+    content = event.text
+    
+    await event.respond(
+        "🕒 **تحديد فترة النشر**\n\nيرجى إرسال فترة النشر بالدقائق (2-120):"
+    )
+    users_data[user_id].content = content
+    users_data[user_id].current_state = "PUBLISH_INTERVAL"
+
+@bot.on(events.NewMessage(func=lambda e: getattr(e.sender_id, 'current_state', None) == 'PUBLISH_INTERVAL'))
+async def publish_interval(event):
+    """Handle publication interval"""
+    user_id = event.sender_id
+    try:
+        interval = int(event.text)
+        if not (2 <= interval <= 120):
+            await event.respond("❌ **فترة النشر يجب أن تكون بين 2-120 دقيقة!**")
+            return
+        
+        users_data[user_id].publish_interval = interval
+        
+        # Start publishing
+        asyncio.create_task(start_publishing(user_id))
+        
+        await event.respond(
+            f"🚀 **بدأ النشر كل {interval} دقيقة!**\nلإيقاف النشر: /stop"
+        )
+    except ValueError:
+        await event.respond("❌ **يرجى إدخال رقم صالح!**")
+
+async def start_publishing(user_id: int):
+    """Start publishing messages at specified interval"""
+    if users_data[user_id].publishing_active:
+        return
+    
+    users_data[user_id].publishing_active = True
+    client = users_data[user_id].client
+    content = users_data[user_id].content
+    interval = users_data[user_id].publish_interval
+    
+    while users_data[user_id].publishing_active:
+        # Check group membership before publishing
+        valid_groups = []
+        for group_id in users_data[user_id].groups:
+            if await check_group_membership(client, group_id):
+                valid_groups.append(group_id)
+        
+        # Update groups if some are no longer accessible
+        if not valid_groups:
+            users_data[user_id].publishing_active = False
+            await bot.send_message(
+                user_id, 
+                "❌ **لم تعد عضوًا في أي من المجموعات المضافة!**"
+            )
+            return
+        
+        users_data[user_id].groups = valid_groups
+        
+        # Publish to groups with delay
+        for group_id in valid_groups:
+            try:
+                group = await client.get_entity(group_id)
+                await client.send_message(group, content, parse_mode='markdown')
+                users_data[user_id].publish_count += 1
+                global_stats["total_publishes"] += 1
+                await asyncio.sleep(10)  # Avoid sending too quickly
+            except Exception as e:
+                logger.error(f"Error publishing to group {group_id}: {e}")
+        
+        # Wait for next interval
+        await asyncio.sleep(interval * 60)
+
+@bot.on(events.NewMessage(pattern='/stop'))
+async def stop_publishing(event):
+    """Stop publishing"""
+    user_id = event.sender_id
+    if users_data[user_id].publishing_active:
+        users_data[user_id].publishing_active = False
+        await event.respond("🛑 **تم إيقاف النشر!**")
     else:
-        await update.message.reply_text("ℹ️ لا يوجد نشر نشط لإيقافه.")
+        await event.respond("❌ **لم يتم بدء النشر!**")
 
-# الدالة الرئيسية
-def main():
-    application = Application.builder().token(TOKEN).build()
+# Stats and help
+@bot.on(events.CallbackQuery(data=b'stats'))
+async def show_stats(event):
+    """Show user stats"""
+    user_id = event.sender_id
+    if user_id not in users_data:
+        users_data[user_id] = BotUser()
+        global_stats["total_users"] += 1
     
-    # محادثة تسجيل الدخول
-    login_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_handler, pattern="^login$")],
-        states={
-            LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_phone)],
-            CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, login_code)],
-            PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, two_step_password)]
-        },
-        fallbacks=[CallbackQueryHandler(button_handler, pattern="^back$")]
+    stats_text = (
+        f"📊 **إحصائياتك**:\n"
+        f"• عدد النشرات: {users_data[user_id].publish_count}\n"
+        f"• عدد المجموعات: {len(users_data[user_id].groups)}\n\n"
+        f"📊 **الإحصائيات العامة**:\n"
+        f"• إجمالي النشرات: {global_stats['total_publishes']}\n"
+        f"• إجمالي المستخدمين: {global_stats['total_users']}\n"
+        f"• إجمالي المجموعات: {global_stats['total_groups']}"
     )
-    
-    # محادثة إضافة مجموعات
-    super_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_handler, pattern="^add_super$")],
-        states={
-            ADD_SUPER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_supergroup)]
-        },
-        fallbacks=[CallbackQueryHandler(button_handler, pattern="^back$")]
+    await event.edit(stats_text)
+
+@bot.on(events.CallbackQuery(data=b'help'))
+async def show_help(event):
+    """Show help message"""
+    help_text = (
+        "📋 **المساعدة**:\n\n"
+        "• /start - بدء التواصل مع البوت\n"
+        "• تسجيل دخول - تسجيل الدخول عبر رقم الهاتف\n"
+        "• إضافة مجموعات - إضافة مجموعات للنشر\n"
+        "• بدء النشر - بدء النشر التلقائي\n"
+        "• /stop - إيقاف النشر\n"
+        "\n📝 **ملاحظات**:\n"
+        "- يجب الاشتراك في القنوات المطلوبة لاستخدام البوت\n"
+        "- لا تشارك أي أكواد تحقق مع أي شخص\n"
+        "- لا تنشر محتوى غير قانوني"
     )
-    
-    # محادثة بدء النشر
-    publish_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_handler, pattern="^start_publish$")],
-        states={
-            PUBLISH_INTERVAL: [
-                CallbackQueryHandler(button_handler, pattern="^\d+$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, start_publishing)
-            ]
-        },
-        fallbacks=[CallbackQueryHandler(button_handler, pattern="^back$")]
-    )
-    
-    # إضافة المعالجات
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stop", stop_publishing))
-    application.add_handler(login_conv)
-    application.add_handler(super_conv)
-    application.add_handler(publish_conv)
-    application.add_handler(CallbackQueryHandler(button_handler))
-    
-    # تشغيل البوت
-    application.run_polling()
+    await event.edit(help_text)
+
+# Error handling
+@bot.on(events.NewMessage(func=lambda e: True))
+async def general_error_handler(event):
+    """Handle unexpected messages"""
+    user_id = event.sender_id
+    await event.respond("⚠️ **رسالة غير متوقعة.** يرجى استخدام لوحة المفاتيح.")
+
+async def main():
+    """Main coroutine for bot operation"""
+    await bot.run_until_disconnected()
 
 if __name__ == "__main__":
-    main() 
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.critical(f"Bot crashed with error: {e}")
+        exit(1)
+ 
