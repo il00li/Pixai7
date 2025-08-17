@@ -4,7 +4,7 @@ import time
 import asyncio
 from collections import defaultdict
 from telethon import TelegramClient, functions, errors
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,6 +14,14 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
 )
+import logging
+
+# تفعيل نظام التسجيل للمساعدة في التشخيص
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ⚙️ الإعدادات الأساسية (يجب على المستخدم تعديلها)
 API_ID = 23656977# ← أدخل هنا الـ API ID من my.telegram.org
@@ -77,10 +85,9 @@ class TaskManager:
                     try:
                         await client.send_message(group, content)
                         self.message_count[group] += 1
-                        # إرسال إشعار نجاح (سيتم إرساله لاحقًا عبر البوت الرئيسي)
+                        logger.info(f"تم نشر رسالة في المجموعة {group}")
                     except Exception as e:
-                        # تسجيل الخطأ (سيتم عرضه في السجلات)
-                        pass
+                        logger.error(f"خطأ في نشر الرسالة في {group}: {str(e)}")
                     await asyncio.sleep(interval)
         finally:
             await client.disconnect()
@@ -425,9 +432,12 @@ async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     log_text = "📊 سجل النشر:\n\n"
+    total_messages = 0
     for group_id, count in task_manager.message_count.items():
-        log_text += f"• المجموعة: {count} رسالة\n"
+        log_text += f"• المجموعة {group_id}: {count} رسالة\n"
+        total_messages += count
     
+    log_text += f"\nإجمالي الرسائل: {total_messages}"
     log_text += f"\nالحالة الحالية: {'مُعَطَّل' if task_manager.pause_event.is_set() else 'نشطة'}"
     await update.callback_query.edit_message_text(log_text)
 
@@ -436,20 +446,24 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.")
     return ConversationHandler.END
 
-# 🚀 بدء البوت
+# 🚀 بدء البوت (النسخة المحدثة والصحيحة)
 def main():
     # تحميل المهمة السابقة إذا وجدت
     if os.path.exists(TASK_FILE):
-        with open(TASK_FILE, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-        asyncio.create_task(
-            task_manager.start_task(
-                settings["account"],
-                settings["groups"],
-                settings["content"],
-                settings["interval"]
+        try:
+            with open(TASK_FILE, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+            asyncio.create_task(
+                task_manager.start_task(
+                    settings["account"],
+                    settings["groups"],
+                    settings["content"],
+                    settings["interval"]
+                )
             )
-        )
+            logger.info("تم استعادة المهمة السابقة بنجاح")
+        except Exception as e:
+            logger.error(f"خطأ في استعادة المهمة: {str(e)}")
     
     # تهيئة التطبيق
     application = Application.builder().token(BOT_TOKEN).build()
@@ -495,9 +509,11 @@ def main():
     # معالجات السجلات
     application.add_handler(CallbackQueryHandler(view_logs, pattern="^view_logs$"))
     
-    # تشغيل البوت
-    print("البوت يعمل الآن...")
+    # تشغيل البوت (التصحيح هنا - هذه هي الطريقة الصحيحة للإصدار 20.x)
+    print("البوت يعمل الآن... تأكد من أن إعدادات API_ID وAPI_HASH وBOT_TOKEN صحيحة.")
+    print("لإيقاف البوت، اضغط Ctrl+C")
     application.run_polling()
 
 if __name__ == "__main__":
     main()
+```
