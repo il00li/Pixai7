@@ -3,7 +3,7 @@ import json
 import time
 import asyncio
 from collections import defaultdict
-from telethon import TelegramClient, functions, errors
+from telethon import TelegramClient, errors
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -23,9 +23,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ⚙️ الإعدادات الأساسية (يجب على المستخدم تعديلها)
-API_ID = 23656977# ← أدخل هنا الـ API ID من my.telegram.org
-API_HASH = "49d3f43531a92b3f5bc403766313ca1e"  # ← أدخل هنا الـ API HASH
+# ⚙️ الإعدادات الأساسية (تم تحديثها حسب معلوماتك)
+API_ID = 23656977  # تم تحديثه بـ API ID المقدم
+API_HASH = "49d3f43531a92b3f5bc403766313ca1e"  # تم تحديثه بـ API HASH المقدم
 BOT_TOKEN = "7966976239:AAELE0s0mZR8od1e55Xe1YcA-IDLgBsJ0bw"  # ← أدخل هنا رمز البوت من BotFather
 
 # 📁 إنشاء المجلدات المطلوبة
@@ -446,7 +446,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.")
     return ConversationHandler.END
 
-# 🚀 بدء البوت (النسخة المحدثة والصحيحة)
+# 🚀 بدء البوت (النسخة النهائية المصححة)
 def main():
     # تحميل المهمة السابقة إذا وجدت
     if os.path.exists(TASK_FILE):
@@ -509,8 +509,9 @@ def main():
     # معالجات السجلات
     application.add_handler(CallbackQueryHandler(view_logs, pattern="^view_logs$"))
     
-    # تشغيل البوت (التصحيح هنا - هذه هي الطريقة الصحيحة للإصدار 20.x)
-    print("البوت يعمل الآن... تأكد من أن إعدادات API_ID وAPI_HASH وBOT_TOKEN صحيحة.")
+    # تشغيل البوت
+    print("البوت يعمل الآن... تأكد من أن إعدادات API_ID وAPI_HASH صحيحة.")
+    print("لإدخال رمز البوت، قم بزيارة BotFather في تيليجرام واحصل على رمز البوت (BOT_TOKEN)")
     print("لإيقاف البوت، اضغط Ctrl+C")
     application.run_polling()
 
