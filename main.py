@@ -1,35 +1,21 @@
 # bot.py
-# بوت نشر تلقائي – جاهز للـ Render (Web Service أو Background)
-# pip install telethon pytz aiohttp python-dotenv
-
-import os
-import json
-import asyncio
-import logging
-from datetime import datetime
-
+import os, json, asyncio, logging
+from aiohttp import web
 from telethon import TelegramClient, events, Button
-from telethon.errors import ChatWriteForbiddenError, UserBannedInChannelError
 
-# ---------- إعدادات ----------
 API_ID   = int(os.getenv("API_ID", "23656977"))
 API_HASH = os.getenv("API_HASH", "49d3f43531a92b3f5bc403766313ca1e")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAH7tl_bkwa2MH7owpf272nbxjDTPv98pcs")
-
-# يمكنك وضع رقمك أو session string عبر متغيرات البيئة
-PHONE       = os.getenv("PHONE", None)
-SESSION_STR = os.getenv("SESSION_STR", None)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAHF2cN0TRK9-EZl6uBRMTMBpdZw8xtKvxA")
 
 SESSIONS_DIR = "sessions"
 TASKS_DIR    = "tasks"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(TASKS_DIR,    exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.FileHandler("bot.log", encoding="utf-8"),
-              logging.StreamHandler()])
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s | %(levelname)s | %(message)s",
+                    handlers=[logging.FileHandler("bot.log", encoding="utf-8"),
+                              logging.StreamHandler()])
 log = logging.getLogger(__name__)
 
 # ---------- أدوات ----------
@@ -75,10 +61,7 @@ async def get_client(uid: int) -> TelegramClient:
         return clients[uid]
     session = user_session(uid)
     client = TelegramClient(session, API_ID, API_HASH)
-    if SESSION_STR:
-        await client.start(session_string=SESSION_STR)
-    else:
-        await client.start(phone=PHONE or "+201234567890")
+    await client.start()
     clients[uid] = client
     return client
 
@@ -139,7 +122,7 @@ async def cb(e):
                 [Button.inline("📊 السجلات", b"logs")]
             ])
         except Exception:
-            pass  # تجاهل أخطاء التعديل المتكرر
+            pass
 
     if data == "add_acc":
         async with bot.conversation(uid, timeout=300) as c:
@@ -249,6 +232,7 @@ async def cb(e):
 
 # ---------- Dummy HTTP Server ----------
 async def dummy_server():
+    from aiohttp import web
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="Bot is alive"))
     runner = web.AppRunner(app)
