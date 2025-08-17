@@ -1,5 +1,5 @@
 # bot.py
-# بوت نشر تلقائي – يدعم عدة مستخدمين – جاهز للـ Render
+# بوت نشر تلقائي – جاهز للـ Render (Web Service أو Background)
 # pip install telethon pytz aiohttp python-dotenv
 
 import os
@@ -10,18 +10,16 @@ from datetime import datetime
 
 from telethon import TelegramClient, events, Button
 from telethon.errors import ChatWriteForbiddenError, UserBannedInChannelError
-from aiohttp import web
 
-# ---------- الإعدادات ----------
+# ---------- إعدادات ----------
 API_ID   = int(os.getenv("API_ID", "23656977"))
 API_HASH = os.getenv("API_HASH", "49d3f43531a92b3f5bc403766313ca1e")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAFEtPbUEIqMVaLN20HH49zIMVSh4jKZJA4")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAH7tl_bkwa2MH7owpf272nbxjDTPv98pcs")
 
-# يمكنك وضع رقمك أو session string هنا مرة واحدة
+# يمكنك وضع رقمك أو session string عبر متغيرات البيئة
 PHONE       = os.getenv("PHONE", None)
 SESSION_STR = os.getenv("SESSION_STR", None)
 
-# مجلدات البيانات
 SESSIONS_DIR = "sessions"
 TASKS_DIR    = "tasks"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
@@ -69,7 +67,6 @@ class Task:
     @property
     def counter(self): return self.data.setdefault("counter", {})
 
-# ---------- العملاء ----------
 clients: dict[int, TelegramClient] = {}
 loops:    dict[int, asyncio.Task]  = {}
 
@@ -81,11 +78,10 @@ async def get_client(uid: int) -> TelegramClient:
     if SESSION_STR:
         await client.start(session_string=SESSION_STR)
     else:
-        await client.start(phone=PHONE)  # يتجاهل stdin عندما يكون phone محدد
+        await client.start(phone=PHONE or "+201234567890")
     clients[uid] = client
     return client
 
-# ---------- حلقة النشر ----------
 async def publish_worker(uid: int):
     while True:
         t = Task(uid)
@@ -213,7 +209,7 @@ async def cb(e):
         try:
             await e.edit(txt, buttons=btns)
         except Exception:
-            pass  # تجاهل التعديل المتكرر
+            pass
 
     elif data == "toggle_task":
         t = Task(uid)
@@ -251,7 +247,7 @@ async def cb(e):
     elif data == "main":
         await refresh_main()
 
-# ---------- Dummy HTTP Server للـ Render ----------
+# ---------- Dummy HTTP Server ----------
 async def dummy_server():
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="Bot is alive"))
@@ -269,3 +265,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+ 
