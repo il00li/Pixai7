@@ -10,7 +10,7 @@ from telethon.errors import ChatWriteForbiddenError, UserBannedInChannelError
 
 API_ID   = int(os.getenv("API_ID", "23656977"))
 API_HASH = os.getenv("API_HASH", "49d3f43531a92b3f5bc403766313ca1e")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAGIVX2ryMpAsnWGzIGkOahzIZJ4N0rndT0")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAHEGdN9fzuCNQNJKvMlHLXbCBgdGthARvo")
 
 SESSIONS_DIR = "sessions"
 TASKS_DIR    = "tasks"
@@ -130,7 +130,7 @@ async def cb(e):
             pass
 
     if data == "add_acc":
-        async with bot.conversation(uid, timeout=300) as c:
+        async with bot.conversation(uid, timeout=600) as c:
             await c.send_message("📞 أرسل رقم الهاتف مع رمز الدولة:")
             phone = (await c.get_response()).text.strip()
             await c.send_message("⏳ جارٍ توصيل الحساب...")
@@ -177,7 +177,7 @@ async def cb(e):
         await cb(type(e)(data=b"setup"))
 
     elif data == "save_task":
-        async with bot.conversation(uid, timeout=300) as c:
+        async with bot.conversation(uid, timeout=600) as c:
             await c.send_message("📄 أرسل النص:")
             t = Task(uid)
             t.text = (await c.get_response()).text
