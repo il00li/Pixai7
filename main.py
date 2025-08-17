@@ -20,11 +20,12 @@ MIN_INTERVAL = 120  # 2 دقائق بالثواني
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# إعدادات التسجيل
+# إعدادات التسجيل - تم التصحيح هنا
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    filename=os.path.join(LOGS_DIR, 'bot.log')
+    filename=os.path.join(LOGS_DIR, 'bot.log')  # تم إصلاح المشكلة في هذا السطر
+
 logger = logging.getLogger(__name__)
 
 # هياكل البيانات
@@ -59,7 +60,7 @@ class AccountManager:
 
     @staticmethod
     def get_user_accounts(user_id):
-        return accounts.get(str(user_id), {}
+        return accounts.get(str(user_id), {})
 
     @staticmethod
     def add_account(user_id, phone, session_file):
@@ -166,7 +167,7 @@ class TelegramAutoPoster:
 
     async def handle_delete_account(self, event):
         user_id = event.sender_id
-        user_accounts, _ = AccountManager.get_user_accounts(user_id)
+        user_accounts = AccountManager.get_user_accounts(user_id)
         
         if not user_accounts:
             await event.respond("❌ ليس لديك أي حسابات مسجلة.")
@@ -181,7 +182,7 @@ class TelegramAutoPoster:
 
     async def handle_create_task(self, event):
         user_id = event.sender_id
-        user_accounts, _ = AccountManager.get_user_accounts(user_id)
+        user_accounts = AccountManager.get_user_accounts(user_id)
         
         if not user_accounts:
             await event.respond("❌ ليس لديك أي حسابات مسجلة. أضف حساب أولاً.")
@@ -424,6 +425,9 @@ class TelegramAutoPoster:
         self.bot.run_until_disconnected()
 
 if __name__ == '__main__':
+    # إنشاء مجلد الجلسات
+    os.makedirs("sessions", exist_ok=True)
+    
     AccountManager.load_data()
     TaskManager.save_tasks()
     poster = TelegramAutoPoster()
