@@ -24,9 +24,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ⚙️ الإعدادات الأساسية (تم تحديثها حسب معلوماتك)
-API_ID = 23656977  # تم تحديثه بـ API ID المقدم
-API_HASH = "49d3f43531a92b3f5bc403766313ca1e"  # تم تحديثه بـ API HASH المقدم
-BOT_TOKEN = "7966976239:AAELE0s0mZR8od1e55Xe1YcA-IDLgBsJ0bw"  # ← أدخل هنا رمز البوت من BotFather
+API_ID = 23656977
+API_HASH = "49d3f43531a92b3f5bc403766313ca1e"
+BOT_TOKEN = "7966976239:AAELE0s0mZR8od1e55Xe1YcA-IDLgBsJ0bw"  # ← أدخل رمز البوت هنا
 
 # 📁 إنشاء المجلدات المطلوبة
 SESSIONS_DIR = "telegram_sessions"
@@ -510,10 +510,25 @@ def main():
     application.add_handler(CallbackQueryHandler(view_logs, pattern="^view_logs$"))
     
     # تشغيل البوت
+    print("\n" + "="*50)
+    print("مرحباً ببرنامج نشر تيليجرام التلقائي")
+    print("="*50)
+    print("للحصول على رمز البوت (BOT_TOKEN):")
+    print("1. افتح تطبيق تيليجرام")
+    print("2. ابحث عن @BotFather")
+    print("3. أرسل /newbot واتبع التعليمات")
+    print("4. انسخ رمز البوت وضعه في المتغير BOT_TOKEN بالأعلى")
+    print("="*50)
+    
+    if "YOUR_BOT_TOKEN" in BOT_TOKEN:
+        print("❌ لم يتم تعيين BOT_TOKEN. الرجاء تعديل الملف وإدخال رمز البوت الصحيح.")
+        return
+    
     print("البوت يعمل الآن... تأكد من أن إعدادات API_ID وAPI_HASH صحيحة.")
-    print("لإدخال رمز البوت، قم بزيارة BotFather في تيليجرام واحصل على رمز البوت (BOT_TOKEN)")
     print("لإيقاف البوت، اضغط Ctrl+C")
+    print("="*50)
+    
     application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main() 
