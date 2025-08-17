@@ -1,13 +1,12 @@
 # bot.py
-# بوت نشر تلقائي – يدعم عدة مستخدمين – جاهز للاستضافة
-# pip install telethon pytz
+# بوت نشر تلقائي لعدة مستخدمين – جاهز للاستضافة على Render (Web أو Background)
+# pip install telethon pytz python-dotenv
 
 import os
 import json
 import asyncio
 import logging
 from datetime import datetime
-from typing import Dict
 
 from telethon import TelegramClient, events, Button
 from telethon.errors import ChatWriteForbiddenError, UserBannedInChannelError
@@ -15,29 +14,31 @@ from telethon.errors import ChatWriteForbiddenError, UserBannedInChannelError
 # ---------- إعدادات ----------
 API_ID   = int(os.getenv("API_ID", "23656977"))
 API_HASH = os.getenv("API_HASH", "49d3f43531a92b3f5bc403766313ca1e")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAFEtPbUEIqMVaLN20HH49zIMVSh4jKZJA4")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAFSHHAYUDwvLf1LzI8QCeRICBxATmtIB9Q")
 
-SESSIONS_DIR = "user_sessions"
-TASKS_DIR    = "user_tasks"
-LOG_FILE     = "bot.log"
+# تستطيع إضافة هذه المتغيرات في Render لتجنّب الإدخال اليدوي
+PHONE       = os.getenv("PHONE", None)        # اختياري
+SESSION_STR = os.getenv("SESSION_STR", None)  # اختياري (كود التحقق)
+
+# مجلدات البيانات
+SESSIONS_DIR = "sessions"
+TASKS_DIR    = "tasks"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
-os.makedirs(TASKS_DIR,    exist_ok=True)
+os.makedirs(TASKS_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"),
-              logging.StreamHandler()])
+    handlers=[logging.FileHandler("bot.log", encoding="utf-8"), logging.StreamHandler()])
 log = logging.getLogger(__name__)
 
-# ---------- أدوات المسار ----------
+# ---------- أدوات ----------
 def user_session(uid: int) -> str:
     return os.path.join(SESSIONS_DIR, f"{uid}.session")
 
 def user_task(uid: int) -> str:
     return os.path.join(TASKS_DIR, f"{uid}.json")
 
-# ---------- كائن مهمة ----------
 class Task:
     def __init__(self, uid: int):
         self.uid = uid
@@ -66,28 +67,29 @@ class Task:
     @property
     def counter(self): return self.data.setdefault("counter", {})
 
-# ---------- قاموس العملاء ----------
-clients: Dict[int, TelegramClient] = {}
-publish_loops: Dict[int, asyncio.Task] = {}
+# ---------- تخزين العملاء ----------
+clients: dict[int, TelegramClient] = {}
+loops:    dict[int, asyncio.Task]  = {}
 
-async def get_client(uid: int, phone: str = None) -> TelegramClient:
+async def get_client(uid: int) -> TelegramClient:
     if uid in clients:
         return clients[uid]
     session = user_session(uid)
     client = TelegramClient(session, API_ID, API_HASH)
-    # نستخدم start بدون input من stdin عبر phone مباشرة
-    await client.start(phone=phone)
+    # نستخدم phone أو session_str من البيئة
+    if SESSION_STR:
+        await client.start(session_string=SESSION_STR)
+    else:
+        await client.start(phone=PHONE or "+201234567890")
     clients[uid] = client
     return client
 
-# ---------- حلقة نشر لكل مستخدم ----------
 async def publish_worker(uid: int):
     while True:
         t = Task(uid)
         if t.active and t.phone and t.text and t.groups:
             client = clients.get(uid)
             if not client:
-                log.warning(f"User {uid} client not found")
                 break
             for gid in t.groups:
                 try:
@@ -95,21 +97,21 @@ async def publish_worker(uid: int):
                     await client.send_message(ent, t.text)
                     t.counter[str(gid)] = t.counter.get(str(gid), 0) + 1
                     t.save()
-                    log.info(f"📤 Sent for user {uid} to {gid}")
+                    log.info(f"📤 user {uid} -> {gid}")
                 except Exception as ex:
-                    log.error(f"❌ User {uid} error {gid}: {ex}")
+                    log.error(f"❌ user {uid} error {gid}: {ex}")
         await asyncio.sleep(t.interval * 60)
 
-def start_task(uid: int):
-    if uid in publish_loops and not publish_loops[uid].done():
+def start_loop(uid: int):
+    if uid in loops and not loops[uid].done():
         return
     loop = asyncio.get_event_loop()
-    publish_loops[uid] = loop.create_task(publish_worker(uid))
+    loops[uid] = loop.create_task(publish_worker(uid))
 
-def stop_task(uid: int):
-    if uid in publish_loops and not publish_loops[uid].done():
-        publish_loops[uid].cancel()
-        del publish_loops[uid]
+def stop_loop(uid: int):
+    if uid in loops and not loops[uid].done():
+        loops[uid].cancel()
+        del loops[uid]
 
 # ---------- البوت ----------
 bot = TelegramClient("bot", API_ID, API_HASH)
@@ -126,7 +128,6 @@ async def start(event):
             [Button.inline("📊 السجلات", b"logs")]
         ])
 
-# ---------- أزرار ----------
 @bot.on(events.CallbackQuery)
 async def cb(e):
     uid = e.sender_id
@@ -142,23 +143,23 @@ async def cb(e):
 
     if data == "add_acc":
         async with bot.conversation(uid) as c:
-            await c.send("📞 أرسل رقم الهاتف مع رمز الدولة:")
+            await c.send_message("📞 أرسل رقم الهاتف مع رمز الدولة:")
             phone = (await c.get_response()).text.strip()
-            await c.send("⏳ جارٍ توصيل الحساب...")
-            task = Task(uid)
-            task.phone = phone
-            task.save()
+            await c.send_message("⏳ جارٍ توصيل الحساب...")
+            t = Task(uid)
+            t.phone = phone
+            t.save()
             try:
-                client = await get_client(uid, phone=phone)
+                client = await get_client(uid)
                 await client.send_message("me", "✅ تم توصيل الحساب بنجاح.")
-                await c.send("✅ تم توصيل الحساب.")
+                await c.send_message("✅ تم توصيل الحساب.")
             except Exception as ex:
-                await c.send(f"❌ فشل: {ex}")
+                await c.send_message(f"❌ فشل: {ex}")
         await refresh_main()
 
     elif data == "setup":
-        task = Task(uid)
-        if not task.phone:
+        t = Task(uid)
+        if not t.phone:
             await e.answer("أضف حسابك أولاً.")
             return
         client = await get_client(uid)
@@ -174,23 +175,23 @@ async def cb(e):
 
     elif data.startswith("g_"):
         gid = int(data[2:])
-        task = Task(uid)
-        if gid in task.groups:
-            task.groups.remove(gid)
+        t = Task(uid)
+        if gid in t.groups:
+            t.groups.remove(gid)
         else:
-            task.groups.append(gid)
-        task.save()
+            t.groups.append(gid)
+        t.save()
         await cb(type(e)(data=b"setup"))
 
     elif data == "save_task":
         async with bot.conversation(uid) as c:
-            await c.send("📄 أرسل النص:")
+            await c.send_message("📄 أرسل النص:")
             t = Task(uid)
             t.text = (await c.get_response()).text
-            await c.send("⏱️ الفاصل (دقائق ≥ 2):")
+            await c.send_message("⏱️ الفاصل (دقائق ≥ 2):")
             t.interval = max(int((await c.get_response()).text), 2)
             t.save()
-            await c.send("✅ تم حفظ المهمة.")
+            await c.send_message("✅ تم حفظ المهمة.")
         await refresh_main()
 
     elif data == "control":
@@ -212,9 +213,9 @@ async def cb(e):
         t.active = not t.active
         t.save()
         if t.active:
-            start_task(uid)
+            start_loop(uid)
         else:
-            stop_task(uid)
+            stop_loop(uid)
         await cb(type(e)(data=b"control"))
 
     elif data == "restart":
@@ -222,13 +223,13 @@ async def cb(e):
         t.counter.clear()
         t.active = True
         t.save()
-        start_task(uid)
+        start_loop(uid)
         await e.answer("تم الإعادة.")
         await cb(type(e)(data=b"control"))
 
     elif data == "logs":
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, encoding="utf-8") as f:
+        if os.path.exists("bot.log"):
+            with open("bot.log", encoding="utf-8") as f:
                 last = "".join(f.readlines()[-30:])
             await e.edit(f"<pre>{last}</pre>", parse_mode="html", buttons=[[Button.inline("🔙", b"main")]])
         else:
@@ -237,7 +238,7 @@ async def cb(e):
     elif data == "main":
         await refresh_main()
 
-# ---------- التشغيل ----------
+# ---------- تشغيل ----------
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
     log.info("Bot started")
@@ -245,4 +246,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
- 
