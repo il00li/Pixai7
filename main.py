@@ -1,5 +1,5 @@
-# multi_user_bot.py
-# بوت يدعم عدة مستخدمين، كل مستخدم يضيف حسابه ويُنشئ مهمة خاصة به
+# bot.py
+# بوت نشر تلقائي – يدعم عدة مستخدمين – جاهز للاستضافة
 # pip install telethon pytz
 
 import os
@@ -7,11 +7,12 @@ import json
 import asyncio
 import logging
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict
 
 from telethon import TelegramClient, events, Button
 from telethon.errors import ChatWriteForbiddenError, UserBannedInChannelError
 
+# ---------- إعدادات ----------
 API_ID   = int(os.getenv("API_ID", "23656977"))
 API_HASH = os.getenv("API_HASH", "49d3f43531a92b3f5bc403766313ca1e")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAFEtPbUEIqMVaLN20HH49zIMVSh4jKZJA4")
@@ -29,7 +30,7 @@ logging.basicConfig(
               logging.StreamHandler()])
 log = logging.getLogger(__name__)
 
-# ---------- أدوات مسارات ----------
+# ---------- أدوات المسار ----------
 def user_session(uid: int) -> str:
     return os.path.join(SESSIONS_DIR, f"{uid}.session")
 
@@ -67,19 +68,19 @@ class Task:
 
 # ---------- قاموس العملاء ----------
 clients: Dict[int, TelegramClient] = {}
+publish_loops: Dict[int, asyncio.Task] = {}
 
-async def get_client(uid: int) -> TelegramClient:
+async def get_client(uid: int, phone: str = None) -> TelegramClient:
     if uid in clients:
         return clients[uid]
     session = user_session(uid)
     client = TelegramClient(session, API_ID, API_HASH)
-    await client.start()  # يطلب التحقق في أول مرة فقط
+    # نستخدم start بدون input من stdin عبر phone مباشرة
+    await client.start(phone=phone)
     clients[uid] = client
     return client
 
 # ---------- حلقة نشر لكل مستخدم ----------
-publish_loops: Dict[int, asyncio.Task] = {}
-
 async def publish_worker(uid: int):
     while True:
         t = Task(uid)
@@ -147,8 +148,8 @@ async def cb(e):
             task = Task(uid)
             task.phone = phone
             task.save()
-            client = await get_client(uid)
             try:
+                client = await get_client(uid, phone=phone)
                 await client.send_message("me", "✅ تم توصيل الحساب بنجاح.")
                 await c.send("✅ تم توصيل الحساب.")
             except Exception as ex:
@@ -244,3 +245,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+ 
