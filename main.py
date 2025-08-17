@@ -1,21 +1,27 @@
 # bot.py
-import os, json, asyncio, logging
-from aiohttp import web
+import os
+import json
+import asyncio
+import logging
+from datetime import datetime
+
 from telethon import TelegramClient, events, Button
+from telethon.errors import ChatWriteForbiddenError, UserBannedInChannelError
 
 API_ID   = int(os.getenv("API_ID", "23656977"))
 API_HASH = os.getenv("API_HASH", "49d3f43531a92b3f5bc403766313ca1e")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAHF2cN0TRK9-EZl6uBRMTMBpdZw8xtKvxA")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7966976239:AAGIVX2ryMpAsnWGzIGkOahzIZJ4N0rndT0")
 
 SESSIONS_DIR = "sessions"
 TASKS_DIR    = "tasks"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(TASKS_DIR,    exist_ok=True)
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s | %(levelname)s | %(message)s",
-                    handlers=[logging.FileHandler("bot.log", encoding="utf-8"),
-                              logging.StreamHandler()])
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.FileHandler("bot.log", encoding="utf-8"),
+              logging.StreamHandler()])
 log = logging.getLogger(__name__)
 
 # ---------- أدوات ----------
@@ -61,7 +67,6 @@ async def get_client(uid: int) -> TelegramClient:
         return clients[uid]
     session = user_session(uid)
     client = TelegramClient(session, API_ID, API_HASH)
-    await client.start()
     clients[uid] = client
     return client
 
@@ -134,6 +139,11 @@ async def cb(e):
             t.save()
             try:
                 client = await get_client(uid)
+                await client.connect()
+                await client.send_code_request(phone)
+                await c.send_message("❓ أرسل الكود الذي وصلك:")
+                code = (await c.get_response()).text.strip()
+                await client.sign_in(phone, code)
                 await client.send_message("me", "✅ تم توصيل الحساب بنجاح.")
                 await c.send_message("✅ تم توصيل الحساب.")
             except Exception as ex:
@@ -230,23 +240,10 @@ async def cb(e):
     elif data == "main":
         await refresh_main()
 
-# ---------- Dummy HTTP Server ----------
-async def dummy_server():
-    from aiohttp import web
-    app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Bot is alive"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
-    await site.start()
-
-# ---------- التشغيل ----------
 async def main():
-    asyncio.create_task(dummy_server())
     await bot.start(bot_token=BOT_TOKEN)
-    log.info("Bot + Dummy HTTP server started")
+    log.info("Bot started")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
     asyncio.run(main())
- 
