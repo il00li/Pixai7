@@ -21,7 +21,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # إعدادات التسجيل - تم التصحيح هنا
-logging.basicConfig(
+logging.basicConfig() 
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     filename=os.path.join(LOGS_DIR, 'bot.log')  # تم إصلاح المشكلة في هذا السطر
@@ -438,3 +438,4 @@ if __name__ == '__main__':
             poster.running_tasks[user_id] = asyncio.create_task(poster.run_posting_task(user_id))
     
     poster.run()
+
