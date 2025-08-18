@@ -4,8 +4,7 @@ import time
 import asyncio
 import logging
 import sqlite3
-from datetime import datetime
-from dotenv import load_dotenv
+from datetime import datetime, timedelta
 from telethon import TelegramClient, events, Button, functions, types
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -20,19 +19,16 @@ from aiohttp import web
 import threading
 import random
 
-# تحميل متغيرات البيئة
-load_dotenv()
-
-# تهيئة الإعدادات
-API_ID = int(os.getenv('API_ID', '23656977'))
-API_HASH = os.getenv('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8110119856:AAGW43nAU_yO7PF7CQ096kKDlWb-Eab7IP4')
+# ===== الإعدادات المباشرة =====
+API_ID = 23656977
+API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
+BOT_TOKEN = '7966976239:AAHyzY1KwJBWdVncELgl-O9VMFZoav6smZM'
+ADMIN_ID = 7251748706  # أيدي المدير المحدد
 TIMEOUT = 300  # 300 ثانية = 5 دقائق
-ADMIN_ID = int(os.getenv('ADMIN_ID', '7251748706'))  # أيدي المدير
 MANDATORY_CHANNELS = ['crazys7', 'AWU87']  # قنوات الاشتراك الإجباري
 MIN_INVITES = 5  # الحد الأدنى من الدعوات المطلوبة
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://pixai7.onrender.com/webhook')
-PORT = int(os.getenv('PORT', '8000'))
+WEBHOOK_URL = 'https://pixai7.onrender.com/webhook'  # رابط الويب هووك
+PORT = 8000  # منفذ الخادم
 
 # تهيئة السجلات
 logging.basicConfig(
@@ -131,26 +127,22 @@ def save_user_settings(user_id, interval=None, message=None, publishing_active=N
     current_interval, current_message, current_active = get_user_settings(user_id)
     
     # تحديث القيم الجديدة
-    if interval is not None:
-        current_interval = interval
-    if message is not None:
-        current_message = message
-    if publishing_active is not None:
-        current_active = publishing_active
+    if interval is None:
+        interval = current_interval
+    if message is None:
+        message = current_message
+    if publishing_active is None:
+        publishing_active = current_active
     
     cursor.execute('''
     INSERT OR REPLACE INTO settings (user_id, interval, message, publishing_active)
     VALUES (?, ?, ?, ?)
-    ''', (user_id, current_interval, current_message, current_active))
+    ''', (user_id, interval, message, publishing_active))
     conn.commit()
 
 def is_user_admin(user_id):
     """التحقق إذا كان المستخدم مديرًا"""
-    if user_id == ADMIN_ID:
-        return True
-    cursor.execute("SELECT is_admin FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    return result and result[0] == 1 if result else False
+    return user_id == ADMIN_ID  # فقط المستخدم المحدد هو المدير
 
 def is_user_banned(user_id):
     """التحقق إذا كان المستخدم محظورًا"""
@@ -173,8 +165,7 @@ async def check_subscription(client, channels):
             except (ValueError, ChannelPrivateError):
                 return False
         return True
-    except Exception as e:
-        logger.error(f"خطأ في التحقق من الاشتراك: {str(e)}")
+    except Exception:
         return False
 
 async def start_publishing(user_id):
@@ -186,18 +177,14 @@ async def start_publishing(user_id):
     save_user_settings(user_id, publishing_active=True)
     
     async def publish_task():
-        while user_id in publishing_tasks and publishing_tasks[user_id].get('active', True):
+        while user_id in publishing_tasks and publishing_tasks[user_id]['active']:
             try:
                 # الحصول على إعدادات المستخدم
                 interval, message, _ = get_user_settings(user_id)
                 
                 # الحصول على جلسة المستخدم
                 cursor.execute("SELECT session FROM users WHERE user_id = ?", (user_id,))
-                result = cursor.fetchone()
-                if not result:
-                    logger.error(f"لم يتم العثور على جلسة للمستخدم {user_id}")
-                    break
-                session_str = result[0]
+                session_str = cursor.fetchone()[0]
                 
                 # تهيئة العميل
                 client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
@@ -304,7 +291,18 @@ async def start_handler(event):
         WHERE referral_code = ?
         ''', (referral_code,))
         conn.commit()
-        logger.info(f"تم تسجيل دعوة بواسطة: {referral_code}")
+    
+    # التحقق من اشتراك المستخدم في القنوات
+    try:
+        if not await check_subscription(event.client, MANDATORY_CHANNELS):
+            channels_list = "\n".join([f"@{channel}" for channel in MANDATORY_CHANNELS])
+            await event.reply(
+                f"📢 يجب الاشتراك في القنوات التالية أولاً:\n{channels_list}\n\n"
+                "بعد الاشتراك، اضغط /start مرة أخرى."
+            )
+            return
+    except Exception as e:
+        logger.error(f"خطأ في التحقق من الاشتراك: {str(e)}")
     
     # التحقق من توثيق المستخدم
     if not is_user_verified(user_id):
@@ -341,21 +339,6 @@ async def start_handler(event):
             # تحديث حالة المستخدم
             cursor.execute("UPDATE users SET verified = 1 WHERE user_id = ?", (user_id,))
             conn.commit()
-            logger.info(f"تم توثيق المستخدم: {user_id}")
-    
-    # التحقق من اشتراك المستخدم في القنوات
-    try:
-        if not await check_subscription(bot, MANDATORY_CHANNELS):
-            channels_list = "\n".join([f"@{channel}" for channel in MANDATORY_CHANNELS])
-            await event.reply(
-                f"📢 يجب الاشتراك في القنوات التالية أولاً:\n{channels_list}\n\n"
-                "بعد الاشتراك، اضغط /start مرة أخرى."
-            )
-            return
-    except Exception as e:
-        logger.error(f"خطأ في التحقق من الاشتراك: {str(e)}")
-        await event.reply("حدث خطأ أثناء التحقق من الاشتراك. يرجى المحاولة لاحقًا.")
-        return
     
     # عرض القائمة الرئيسية
     buttons = [
@@ -524,7 +507,7 @@ async def handle_messages(event):
             cursor.execute('''
             INSERT OR REPLACE INTO users (user_id, phone, session)
             VALUES (?, ?, ?)
-            ''', (user_id, data['phone'], session_str))
+            ''', (user_id, phone, session_str))
             conn.commit()
             
             await client.disconnect()
@@ -613,6 +596,7 @@ async def toggle_publishing_handler(event):
     
     if publishing_active:
         await stop_publishing(user_id)
+        new_state = False
         action = "⏸ تم إيقاف النشر"
     else:
         # التحقق من وجود إعدادات النشر
@@ -622,6 +606,7 @@ async def toggle_publishing_handler(event):
             return
             
         await start_publishing(user_id)
+        new_state = True
         action = "▶️ تم تشغيل النشر"
     
     # تحديث الزر في القائمة
@@ -954,7 +939,6 @@ async def start_bot():
     await site.start()
     
     logger.info(f"Bot is running with Webhook on port {PORT}")
-    await asyncio.Event().wait()  # تشغيل للأبد
 
 # ===== نقطة الدخول الرئيسية =====
 if __name__ == '__main__':
@@ -963,6 +947,7 @@ if __name__ == '__main__':
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(start_bot())
+        loop.run_forever()
 
     # تشغيل البوت في خلفية
     threading.Thread(target=run_bot, daemon=True).start()
@@ -973,6 +958,7 @@ if __name__ == '__main__':
     
     @flask_app.route('/')
     def home():
-        return jsonify(status="running", time=datetime.now().isoformat())
+        return jsonify(status="running", uptime=time.time() - start_time)
     
+    start_time = time.time()
     flask_app.run(host='0.0.0.0', port=5000)
