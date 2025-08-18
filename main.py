@@ -20,7 +20,7 @@ MIN_INTERVAL = 120  # 2 دقائق بالثواني
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# إعدادات التسجيل
+# إعدادات التسجيل - تم التصحيح هنا
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
@@ -426,14 +426,18 @@ if __name__ == '__main__':
     # إنشاء المجلدات الضرورية
     os.makedirs("sessions", exist_ok=True)
     
+    # تحميل البيانات
     AccountManager.load_data()
+    
+    # بدء البوت
     poster = TelegramAutoPoster()
     
     # بدء مهام النشر للمهام النشطة
-    for user_id in list(tasks.keys()):
-        task = tasks[user_id]
+    for user_id_str in list(tasks.keys()):
+        task = tasks[user_id_str]
         if task.get('status') == 'active':
-            poster.running_tasks[int(user_id)] = asyncio.create_task(
-                poster.run_posting_task(int(user_id)))
+            user_id = int(user_id_str)
+            poster.running_tasks[user_id] = asyncio.create_task(poster.run_posting_task(user_id))
     
-    poster.run()
+    # تشغيل البوت
+    poster.run() 
