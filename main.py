@@ -2,12 +2,12 @@ import os
 import json
 import time
 import asyncio
+import threading
 from collections import defaultdict
 import telebot
 from telethon import TelegramClient, errors
 from telebot import types
 import logging
-
 
 
 # تفعيل نظام التسجيل للمساعدة في التشخيص
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # ⚙️ استخراج الإعدادات من المتغيرات البيئية (مهم لـ Render)
 API_ID = int(os.getenv('API_ID', '23656977'))
 API_HASH = os.getenv('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7966976239:AAELE0s0mZR8od1e55Xe1YcA-IDLgBsJ0bw')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7966976239:AAGMg2RBAJEB_nDWGJEhsaOialSDJhWbAEE')
 
 # 📁 إنشاء المجلدات المطلوبة
 SESSIONS_DIR = "telegram_sessions"
@@ -40,9 +40,11 @@ class TaskManager:
         self.message_count = defaultdict(int)
         self.current_settings = None
         self.bot = None
+        self.user_id = None
 
-    def set_bot(self, bot):
+    def set_bot(self, bot, user_id):
         self.bot = bot
+        self.user_id = user_id
 
     async def start_task(self, account_session, groups, content, interval):
         self.stop_event.clear()
@@ -86,16 +88,16 @@ class TaskManager:
                         logger.info(f"تم نشر رسالة في المجموعة {group}")
                         
                         # إرسال إشعار إلى المستخدم
-                        if self.bot and self.bot.user:
+                        if self.bot and self.user_id:
                             self.bot.send_message(
-                                self.bot.user.id,
+                                self.user_id,
                                 f"✅ تم نشر رسالة في المجموعة {group}"
                             )
                     except Exception as e:
                         logger.error(f"خطأ في نشر الرسالة في {group}: {str(e)}")
-                        if self.bot and self.bot.user:
+                        if self.bot and self.user_id:
                             self.bot.send_message(
-                                self.bot.user.id,
+                                self.user_id,
                                 f"❌ خطأ في نشر الرسالة في {group}: {str(e)}"
                             )
                     await asyncio.sleep(interval)
@@ -192,28 +194,36 @@ def add_account_phone_step(message):
     
     # حفظ الهاتف في بيانات المستخدم
     user_data = {
-        "phone": phone
+        "phone": phone,
+        "state": "waiting_for_code"
     }
-    # في تطبيق حقيقي، ستستخدم قاعدة بيانات أو ملفاً لتخزين البيانات
-    # هنا نستخدم ملفاً بسيطاً للتوضيح
+    # حفظ بيانات المستخدم في ملف
     with open(f"user_{message.chat.id}.json", "w") as f:
         json.dump(user_data, f)
     
     # إنشاء عميل تيليجرام مؤقت
     temp_session = f"temp_{phone.replace('+', '')}"
-    client = TelegramClient(os.path.join(SESSIONS_DIR, temp_session), API_ID, API_HASH)
     
     async def send_code_request():
+        client = TelegramClient(os.path.join(SESSIONS_DIR, temp_session), API_ID, API_HASH)
         await client.connect()
-        await client.send_code_request(phone)
-        await client.disconnect()
+        try:
+            await client.send_code_request(phone)
+            logger.info(f"تم إرسال رمز التحقق إلى {phone}")
+        except Exception as e:
+            logger.error(f"خطأ في إرسال رمز التحقق: {str(e)}")
+            bot.send_message(message.chat.id, f"❌ خطأ في إرسال رمز التحقق: {str(e)}")
+        finally:
+            await client.disconnect()
     
+    # تشغيل العملية الآسنخرونية
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(send_code_request())
-    loop.close()
-    
-    bot.send_message(message.chat.id, "تم إرسال الرمز. أدخل الرمز الذي تلقيته:")
+    try:
+        loop.run_until_complete(send_code_request())
+        bot.send_message(message.chat.id, "تم إرسال الرمز. أدخل الرمز الذي تلقيته:")
+    finally:
+        loop.close()
 
 def add_account_code_step(message):
     code = message.text.strip()
@@ -223,35 +233,44 @@ def add_account_code_step(message):
         with open(f"user_{message.chat.id}.json", "r") as f:
             user_data = json.load(f)
         phone = user_data["phone"]
-    except:
+    except Exception as e:
+        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
         bot.send_message(message.chat.id, "حدث خطأ. يرجى المحاولة مرة أخرى.")
         return
     
     # إنشاء عميل تيليجرام
     temp_session = f"temp_{phone.replace('+', '')}"
-    client = TelegramClient(os.path.join(SESSIONS_DIR, temp_session), API_ID, API_HASH)
     
     async def sign_in():
+        client = TelegramClient(os.path.join(SESSIONS_DIR, temp_session), API_ID, API_HASH)
         await client.connect()
-        await client.sign_in(phone, code)
-        # حفظ الجلسة الدائمة
-        session_file = f"{phone.replace('+', '')}.session"
-        await client.session.save(os.path.join(SESSIONS_DIR, session_file))
-        await client.disconnect()
-        
-        # حذف الجلسة المؤقتة
-        temp_path = os.path.join(SESSIONS_DIR, temp_session)
-        if os.path.exists(f"{temp_path}.session"):
-            os.remove(f"{temp_path}.session")
+        try:
+            await client.sign_in(phone, code)
+            # حفظ الجلسة الدائمة
+            session_file = f"{phone.replace('+', '')}.session"
+            await client.session.save(os.path.join(SESSIONS_DIR, session_file))
+            logger.info(f"تم تسجيل الدخول بنجاح باستخدام {phone}")
+            return True
+        except Exception as e:
+            logger.error(f"خطأ في التحقق: {str(e)}")
+            return str(e)
+        finally:
+            await client.disconnect()
     
+    # تشغيل العملية الآسنخرونية
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
     try:
-        loop.run_until_complete(sign_in())
-        bot.send_message(message.chat.id, "✅ تم إضافة الحساب بنجاح!")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ خطأ في التحقق: {str(e)}")
+        result = loop.run_until_complete(sign_in())
+        if result is True:
+            bot.send_message(message.chat.id, "✅ تم إضافة الحساب بنجاح!")
+            
+            # حذف الجلسة المؤقتة
+            temp_path = os.path.join(SESSIONS_DIR, temp_session)
+            if os.path.exists(f"{temp_path}.session"):
+                os.remove(f"{temp_path}.session")
+        else:
+            bot.send_message(message.chat.id, f"❌ خطأ في التحقق: {result}")
     finally:
         loop.close()
 
@@ -336,8 +355,10 @@ def show_groups(call):
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    groups = loop.run_until_complete(get_groups())
-    loop.close()
+    try:
+        groups = loop.run_until_complete(get_groups())
+    finally:
+        loop.close()
     
     if not groups:
         bot.edit_message_text(
@@ -392,13 +413,16 @@ def select_account(call):
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    groups = loop.run_until_complete(get_groups())
-    loop.close()
+    try:
+        groups = loop.run_until_complete(get_groups())
+    finally:
+        loop.close()
     
     # حفظ البيانات في ملف
     user_data = {
         "account": session_file,
-        "all_groups": groups
+        "all_groups": groups,
+        "selected_groups": []
     }
     with open(f"user_{call.message.chat.id}.json", "w") as f:
         json.dump(user_data, f)
@@ -434,12 +458,13 @@ def select_groups(call):
     try:
         with open(f"user_{call.message.chat.id}.json", "r") as f:
             user_data = json.load(f)
-    except:
+    except Exception as e:
+        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
         bot.answer_callback_query(call.id, "حدث خطأ. يرجى المحاولة مرة أخرى.", show_alert=True)
         return
     
     # تخزين المجموعات المختارة
-    if "selected_groups" not in user_data:
+    if "selected_groups" not in user_
         user_data["selected_groups"] = []
     
     if group_id in user_data["selected_groups"]:
@@ -475,7 +500,8 @@ def next_setup_step(call):
     try:
         with open(f"user_{call.message.chat.id}.json", "r") as f:
             user_data = json.load(f)
-    except:
+    except Exception as e:
+        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
         bot.answer_callback_query(call.id, "حدث خطأ. يرجى المحاولة مرة أخرى.", show_alert=True)
         return
     
@@ -495,9 +521,10 @@ def enter_content_step(message):
     
     # قراءة بيانات المستخدم
     try:
-        with open(f"user_{call.message.chat.id}.json", "r") as f:
+        with open(f"user_{message.chat.id}.json", "r") as f:
             user_data = json.load(f)
-    except:
+    except Exception as e:
+        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
         bot.send_message(message.chat.id, "حدث خطأ. يرجى المحاولة مرة أخرى.")
         return
     
@@ -522,7 +549,8 @@ def enter_interval_step(message):
         try:
             with open(f"user_{message.chat.id}.json", "r") as f:
                 user_data = json.load(f)
-        except:
+        except Exception as e:
+            logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
             bot.send_message(message.chat.id, "حدث خطأ. يرجى المحاولة مرة أخرى.")
             return
         
@@ -600,14 +628,49 @@ def stop_task(call):
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(stop())
-    loop.close()
+    try:
+        loop.run_until_complete(stop())
+    finally:
+        loop.close()
     
     bot.edit_message_text(
         "⏹️ تم إيقاف المهمة بنجاح!",
         call.message.chat.id,
         call.message.message_id
     )
+
+@bot.callback_query_handler(func=lambda call: call.data == "start_task")
+def start_task(call):
+    # قراءة بيانات المستخدم
+    try:
+        with open(f"user_{call.message.chat.id}.json", "r") as f:
+            user_data = json.load(f)
+    except Exception as e:
+        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
+        bot.send_message(call.message.chat.id, "حدث خطأ. يرجى المحاولة مرة أخرى.")
+        return
+    
+    # تعيين البوت في مدير المهام
+    task_manager.set_bot(bot, call.message.chat.id)
+    
+    async def start_task_async():
+        await task_manager.start_task(
+            user_data["account"],
+            user_data["selected_groups"],
+            user_data["content"],
+            user_data["interval"]
+        )
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(start_task_async())
+        bot.send_message(
+            call.message.chat.id,
+            "✅ تم تشغيل المهمة بنجاح!\nاستخدم 'التحكم في المهمة' لمراقبة الحالة."
+        )
+    finally:
+        loop.close()
 
 @bot.callback_query_handler(func=lambda call: call.data == "modify_task")
 def modify_task(call):
@@ -668,7 +731,7 @@ def main():
                 settings = json.load(f)
             
             # تعيين البوت في مدير المهام
-            task_manager.set_bot(bot)
+            task_manager.set_bot(bot, None)  # سيتم تعيين معرف المستخدم لاحقاً
             
             async def start_previous_task():
                 await task_manager.start_task(
@@ -680,15 +743,13 @@ def main():
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(start_previous_task())
-            loop.close()
-            
-            logger.info("تم استعادة المهمة السابقة بنجاح")
+            try:
+                loop.run_until_complete(start_previous_task())
+                logger.info("تم استعادة المهمة السابقة بنجاح")
+            finally:
+                loop.close()
         except Exception as e:
             logger.error(f"خطأ في استعادة المهمة: {str(e)}")
-    
-    # تعيين البوت في مدير المهام
-    task_manager.set_bot(bot)
     
     # بدء البوت
     logger.info("البوت يعمل الآن...")
