@@ -1,765 +1,439 @@
 import os
 import json
-import time
 import asyncio
-import threading
-from collections import defaultdict
-import telebot
-from telethon import TelegramClient, errors
-from telebot import types
 import logging
+from datetime import datetime
+from telethon import TelegramClient, events, Button, types
+from telethon.errors import FloodWaitError, ChannelInvalidError, ChatWriteForbiddenError
 
+# التكوينات الأساسية
+API_ID = 23656977
+API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
+BOT_TOKEN = '7966976239:AAF0ypJKeGiKVBS9yowQxlUDh9kpzjsNG_Q'  # استبدل هذا برمز البوت الخاص بك
+DATA_DIR = 'data'
+ACCOUNTS_FILE = os.path.join(DATA_DIR, 'accounts.json')
+TASKS_FILE = os.path.join(DATA_DIR, 'tasks.json')
+LOGS_DIR = os.path.join(DATA_DIR, 'logs')
+MIN_INTERVAL = 120  # 2 دقائق بالثواني
 
-# تفعيل نظام التسجيل للمساعدة في التشخيص
+# إنشاء المجلدات اللازمة
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# إعدادات التسجيل
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+    level=logging.INFO,
+    filename=os.path.join(LOGS_DIR, 'bot.log')
 logger = logging.getLogger(__name__)
 
-# ⚙️ استخراج الإعدادات من المتغيرات البيئية (مهم لـ Render)
-API_ID = int(os.getenv('API_ID', '23656977'))
-API_HASH = os.getenv('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7966976239:AAGMg2RBAJEB_nDWGJEhsaOialSDJhWbAEE')
+# هياكل البيانات
+accounts = {}
+tasks = {}
+user_states = {}
 
-# 📁 إنشاء المجلدات المطلوبة
-SESSIONS_DIR = "telegram_sessions"
-TASK_FILE = "current_task.json"
-os.makedirs(SESSIONS_DIR, exist_ok=True)
+class AccountManager:
+    @staticmethod
+    def load_data():
+        global accounts, tasks
+        try:
+            if os.path.exists(ACCOUNTS_FILE):
+                with open(ACCOUNTS_FILE, 'r') as f:
+                    accounts = json.load(f)
+            if os.path.exists(TASKS_FILE):
+                with open(TASKS_FILE, 'r') as f:
+                    tasks = json.load(f)
+        except Exception as e:
+            logger.error(f"خطأ في تحميل البيانات: {e}")
 
-# 🧩 حالات المحادثة
-ACCOUNT_PHONE, ACCOUNT_CODE, SETUP_ACCOUNT, SETUP_GROUPS, SETUP_CONTENT, SETUP_INTERVAL = range(6)
+    @staticmethod
+    def save_accounts():
+        with open(ACCOUNTS_FILE, 'w') as f:
+            json.dump(accounts, f, indent=4, ensure_ascii=False)
 
-# 📦 مدير المهام
-class TaskManager:
-    def __init__(self):
-        self.task = None
-        self.stop_event = asyncio.Event()
-        self.pause_event = asyncio.Event()
-        self.group_status = {}
-        self.message_count = defaultdict(int)
-        self.current_settings = None
-        self.bot = None
-        self.user_id = None
+    @staticmethod
+    def save_tasks():
+        with open(TASKS_FILE, 'w') as f:
+            json.dump(tasks, f, indent=4, ensure_ascii=False)
 
-    def set_bot(self, bot, user_id):
-        self.bot = bot
-        self.user_id = user_id
+    @staticmethod
+    def get_user_accounts(user_id):
+        return accounts.get(str(user_id), {})
 
-    async def start_task(self, account_session, groups, content, interval):
-        self.stop_event.clear()
-        self.pause_event.clear()
-        self.message_count.clear()
-        self.current_settings = {
-            "account": account_session,
-            "groups": groups,
-            "content": content,
-            "interval": interval
+    @staticmethod
+    def add_account(user_id, phone, session_file):
+        user_id = str(user_id)
+        if user_id not in accounts:
+            accounts[user_id] = {}
+        accounts[user_id][phone] = {
+            'session': session_file,
+            'groups': {},
+            'last_check': datetime.now().isoformat()
         }
-        
-        # حفظ الإعدادات في ملف
-        with open(TASK_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.current_settings, f, ensure_ascii=False)
-        
-        # تشغيل حلقة النشر
-        self.task = asyncio.create_task(
-            self._posting_loop(account_session, groups, content, interval)
-        )
+        AccountManager.save_accounts()
 
-    async def _posting_loop(self, account_session, groups, content, interval):
-        client = TelegramClient(os.path.join(SESSIONS_DIR, account_session), API_ID, API_HASH)
-        await client.connect()
-        
-        try:
-            while not self.stop_event.is_set():
-                if self.pause_event.is_set():
-                    await asyncio.sleep(1)
-                    continue
-                    
-                for group in groups:
-                    if self.stop_event.is_set():
-                        break
-                    if not self.group_status.get(group, True):
-                        continue
-                        
-                    try:
-                        await client.send_message(group, content)
-                        self.message_count[group] += 1
-                        logger.info(f"تم نشر رسالة في المجموعة {group}")
-                        
-                        # إرسال إشعار إلى المستخدم
-                        if self.bot and self.user_id:
-                            self.bot.send_message(
-                                self.user_id,
-                                f"✅ تم نشر رسالة في المجموعة {group}"
-                            )
-                    except Exception as e:
-                        logger.error(f"خطأ في نشر الرسالة في {group}: {str(e)}")
-                        if self.bot and self.user_id:
-                            self.bot.send_message(
-                                self.user_id,
-                                f"❌ خطأ في نشر الرسالة في {group}: {str(e)}"
-                            )
-                    await asyncio.sleep(interval)
-        finally:
-            await client.disconnect()
-
-    async def stop_task(self):
-        self.stop_event.set()
-        if self.task:
-            await self.task
-            self.task = None
-        if os.path.exists(TASK_FILE):
-            os.remove(TASK_FILE)
-
-    def pause_task(self):
-        self.pause_event.set()
-
-    def resume_task(self):
-        self.pause_event.clear()
-
-    def stop_group(self, group_id):
-        self.group_status[group_id] = False
-
-    def start_group(self, group_id):
-        self.group_status[group_id] = True
-
-    def get_status(self):
-        if not self.current_settings:
-            return "لا توجد مهمة نشطة"
-        status = "مُعَطَّل" if self.pause_event.is_set() else "نشطة"
-        return f"الحالة: {status}\nالمحتوى: {self.current_settings['content'][:20]}...\nالفاصل: {self.current_settings['interval']} ثانية"
-
-# 🗄️ تهيئة مدير المهام
-task_manager = TaskManager()
-
-# 🌐 وظيفة البحث عن المجموعات
-async def get_groups_for_account(session_file):
-    client = TelegramClient(os.path.join(SESSIONS_DIR, session_file), API_ID, API_HASH)
-    await client.connect()
-    dialogs = await client.get_dialogs()
-    groups = []
-    
-    for dialog in dialogs:
-        if dialog.is_group or dialog.is_channel:
-            try:
-                # التحقق من صلاحيات النشر
-                participant = await client.get_permissions(dialog)
-                can_post = participant.post_messages if hasattr(participant, 'post_messages') else False
-            except:
-                can_post = False
-            groups.append({
-                "id": dialog.id,
-                "name": dialog.name,
-                "can_post": can_post
-            })
-    
-    await client.disconnect()
-    return groups
-
-# 🤖 إنشاء بوت telebot
-bot = telebot.TeleBot(BOT_TOKEN)
-
-# 🤖 وظائف البوت
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        types.InlineKeyboardButton("➕ إضافة حساب", callback_data="add_account"),
-        types.InlineKeyboardButton("🗑️ حذف حساب", callback_data="delete_account"),
-        types.InlineKeyboardButton("👥 عرض المجموعات", callback_data="list_groups"),
-        types.InlineKeyboardButton("⚙️ إعداد مهمة نشر", callback_data="setup_task"),
-        types.InlineKeyboardButton("⏯️ التحكم في المهمة", callback_data="control_task"),
-        types.InlineKeyboardButton("📊 عرض السجلات", callback_data="view_logs")
-    )
-    bot.send_message(
-        message.chat.id,
-        "مرحباً! أنا بوت إدارة النشر التلقائي لتيليجرام.\nاختر خياراً من القائمة:",
-        reply_markup=keyboard
-    )
-
-# --- إدارة الحسابات ---
-@bot.callback_query_handler(func=lambda call: call.data == "add_account")
-def add_account_start(call):
-    bot.edit_message_text(
-        "أدخل رقم الهاتف مع مفتاح الدولة (مثال: +966500000000):",
-        call.message.chat.id,
-        call.message.message_id
-    )
-    bot.register_next_step_handler(call.message, add_account_phone_step)
-
-def add_account_phone_step(message):
-    phone = message.text.strip()
-    
-    # حفظ الهاتف في بيانات المستخدم
-    user_data = {
-        "phone": phone,
-        "state": "waiting_for_code"
-    }
-    # حفظ بيانات المستخدم في ملف
-    with open(f"user_{message.chat.id}.json", "w") as f:
-        json.dump(user_data, f)
-    
-    # إنشاء عميل تيليجرام مؤقت
-    temp_session = f"temp_{phone.replace('+', '')}"
-    
-    async def send_code_request():
-        client = TelegramClient(os.path.join(SESSIONS_DIR, temp_session), API_ID, API_HASH)
-        await client.connect()
-        try:
-            await client.send_code_request(phone)
-            logger.info(f"تم إرسال رمز التحقق إلى {phone}")
-        except Exception as e:
-            logger.error(f"خطأ في إرسال رمز التحقق: {str(e)}")
-            bot.send_message(message.chat.id, f"❌ خطأ في إرسال رمز التحقق: {str(e)}")
-        finally:
-            await client.disconnect()
-    
-    # تشغيل العملية الآسنخرونية
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(send_code_request())
-        bot.send_message(message.chat.id, "تم إرسال الرمز. أدخل الرمز الذي تلقيته:")
-    finally:
-        loop.close()
-
-def add_account_code_step(message):
-    code = message.text.strip()
-    
-    # قراءة بيانات المستخدم
-    try:
-        with open(f"user_{message.chat.id}.json", "r") as f:
-            user_data = json.load(f)
-        phone = user_data["phone"]
-    except Exception as e:
-        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
-        bot.send_message(message.chat.id, "حدث خطأ. يرجى المحاولة مرة أخرى.")
-        return
-    
-    # إنشاء عميل تيليجرام
-    temp_session = f"temp_{phone.replace('+', '')}"
-    
-    async def sign_in():
-        client = TelegramClient(os.path.join(SESSIONS_DIR, temp_session), API_ID, API_HASH)
-        await client.connect()
-        try:
-            await client.sign_in(phone, code)
-            # حفظ الجلسة الدائمة
-            session_file = f"{phone.replace('+', '')}.session"
-            await client.session.save(os.path.join(SESSIONS_DIR, session_file))
-            logger.info(f"تم تسجيل الدخول بنجاح باستخدام {phone}")
+    @staticmethod
+    def delete_account(user_id, phone):
+        user_id = str(user_id)
+        if user_id in accounts and phone in accounts[user_id]:
+            del accounts[user_id][phone]
+            AccountManager.save_accounts()
             return True
-        except Exception as e:
-            logger.error(f"خطأ في التحقق: {str(e)}")
-            return str(e)
-        finally:
-            await client.disconnect()
-    
-    # تشغيل العملية الآسنخرونية
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        result = loop.run_until_complete(sign_in())
-        if result is True:
-            bot.send_message(message.chat.id, "✅ تم إضافة الحساب بنجاح!")
-            
-            # حذف الجلسة المؤقتة
-            temp_path = os.path.join(SESSIONS_DIR, temp_session)
-            if os.path.exists(f"{temp_path}.session"):
-                os.remove(f"{temp_path}.session")
-        else:
-            bot.send_message(message.chat.id, f"❌ خطأ في التحقق: {result}")
-    finally:
-        loop.close()
+        return False
 
-@bot.callback_query_handler(func=lambda call: call.data == "delete_account")
-def delete_account(call):
-    sessions = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session') and not f.startswith('temp_')]
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    
-    for session in sessions:
-        phone = session.replace('.session', '')
-        keyboard.add(types.InlineKeyboardButton(phone, callback_data=f"del_{session}"))
-    
-    bot.edit_message_text(
-        "اختر الحساب للحذف:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=keyboard
-    )
+class TaskManager:
+    @staticmethod
+    def create_task(user_id, account, groups, content, interval):
+        user_id = str(user_id)
+        tasks[user_id] = {
+            'account': account,
+            'groups': {g: {'status': 'active', 'count': 0} for g in groups},
+            'content': content,
+            'interval': max(interval, MIN_INTERVAL),
+            'status': 'active',
+            'created_at': datetime.now().isoformat(),
+            'last_run': None
+        }
+        TaskManager.save_tasks()
+        return tasks[user_id]
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("del_"))
-def confirm_delete(call):
-    session_file = call.data[4:]
-    
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(
-        types.InlineKeyboardButton("✅ نعم", callback_data=f"confirm_del_{session_file}"),
-        types.InlineKeyboardButton("❌ لا", callback_data="cancel_delete")
-    )
-    
-    bot.edit_message_text(
-        f"هل أنت متأكد من حذف الحساب {session_file}؟",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=keyboard
-    )
+    @staticmethod
+    def get_task(user_id):
+        user_id = str(user_id)
+        return tasks.get(user_id)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_"))
-def execute_delete(call):
-    session_file = call.data[12:]
-    
-    # حذف ملف الجلسة
-    session_path = os.path.join(SESSIONS_DIR, session_file)
-    if os.path.exists(session_path):
-        os.remove(session_path)
-    
-    bot.edit_message_text(
-        "✅ تم حذف الحساب بنجاح!",
-        call.message.chat.id,
-        call.message.message_id
-    )
+    @staticmethod
+    def update_task(user_id, **kwargs):
+        user_id = str(user_id)
+        if user_id in tasks:
+            tasks[user_id].update(kwargs)
+            TaskManager.save_tasks()
+            return True
+        return False
 
-@bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
-def cancel_delete(call):
-    bot.edit_message_text(
-        "تم إلغاء عملية الحذف.",
-        call.message.chat.id,
-        call.message.message_id
-    )
+    @staticmethod
+    def pause_group(user_id, group_id):
+        user_id = str(user_id)
+        if user_id in tasks and group_id in tasks[user_id]['groups']:
+            tasks[user_id]['groups'][group_id]['status'] = 'paused'
+            TaskManager.save_tasks()
+            return True
+        return False
 
-@bot.callback_query_handler(func=lambda call: call.data == "list_groups")
-def list_groups(call):
-    sessions = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session') and not f.startswith('temp_')]
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    
-    for session in sessions:
-        phone = session.replace('.session', '')
-        keyboard.add(types.InlineKeyboardButton(phone, callback_data=f"groups_{session}"))
-    
-    bot.edit_message_text(
-        "اختر الحساب لعرض مجموعاته:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=keyboard
-    )
+    @staticmethod
+    def resume_group(user_id, group_id):
+        user_id = str(user_id)
+        if user_id in tasks and group_id in tasks[user_id]['groups']:
+            tasks[user_id]['groups'][group_id]['status'] = 'active'
+            TaskManager.save_tasks()
+            return True
+        return False
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("groups_"))
-def show_groups(call):
-    session_file = call.data[7:]
-    
-    async def get_groups():
-        return await get_groups_for_account(session_file)
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        groups = loop.run_until_complete(get_groups())
-    finally:
-        loop.close()
-    
-    if not groups:
-        bot.edit_message_text(
-            "لا توجد مجموعات متاحة لهذا الحساب.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-        return
-    
-    message = "المجموعات المتاحة مع حالة الصلاحيات:\n\n"
-    for group in groups:
-        status = "✅" if group["can_post"] else "❌"
-        message += f"{status} {group['name']}\n"
-    
-    bot.edit_message_text(
-        message,
-        call.message.chat.id,
-        call.message.message_id
-    )
+class TelegramAutoPoster:
+    def __init__(self):
+        self.bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+        self.register_handlers()
+        self.running_tasks = {}
+        
+    def register_handlers(self):
+        self.bot.add_event_handler(self.handle_start, events.NewMessage(pattern='/start'))
+        self.bot.add_event_handler(self.handle_add_account, events.NewMessage(pattern='/add_account'))
+        self.bot.add_event_handler(self.handle_delete_account, events.NewMessage(pattern='/delete_account'))
+        self.bot.add_event_handler(self.handle_create_task, events.NewMessage(pattern='/create_task'))
+        self.bot.add_event_handler(self.handle_control_task, events.NewMessage(pattern='/control_task'))
+        self.bot.add_event_handler(self.handle_callback, events.CallbackQuery())
+        self.bot.add_event_handler(self.handle_message, events.NewMessage())
 
-# --- إعداد مهمة النشر ---
-@bot.callback_query_handler(func=lambda call: call.data == "setup_task")
-def setup_task(call):
-    sessions = [f for f in os.listdir(SESSIONS_DIR) if f.endswith('.session') and not f.startswith('temp_')]
-    
-    if not sessions:
-        bot.edit_message_text(
-            "❌ لم تقم بإضافة أي حسابات بعد. أضف حساباً أولاً.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-        return
-    
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    for session in sessions:
-        phone = session.replace('.session', '')
-        keyboard.add(types.InlineKeyboardButton(phone, callback_data=f"task_account_{session}"))
-    
-    bot.edit_message_text(
-        "اختر الحساب الذي ستستخدمه في النشر:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=keyboard
-    )
+    async def handle_start(self, event):
+        user_id = event.sender_id
+        buttons = [
+            [Button.inline("➕ إضافة حساب", b"add_account")],
+            [Button.inline("📝 إنشاء مهمة نشر", b"create_task")],
+            [Button.inline("⚙️ التحكم بالمهمة", b"control_task")]
+        ]
+        await event.respond("**مرحباً في بوت النشر التلقائي!**\nاختر أحد الخيارات:", buttons=buttons)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("task_account_"))
-def select_account(call):
-    session_file = call.data[12:]
-    
-    async def get_groups():
-        return await get_groups_for_account(session_file)
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        groups = loop.run_until_complete(get_groups())
-    finally:
-        loop.close()
-    
-    # حفظ البيانات في ملف
-    user_data = {
-        "account": session_file,
-        "all_groups": groups,
-        "selected_groups": []
-    }
-    with open(f"user_{call.message.chat.id}.json", "w") as f:
-        json.dump(user_data, f)
-    
-    # عرض المجموعات القابلة للنشر فقط
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    for group in groups:
-        if group["can_post"]:
-            keyboard.add(types.InlineKeyboardButton(group["name"], callback_data=f"sel_{group['id']}"))
-    
-    if not keyboard.keyboard:
-        bot.edit_message_text(
-            "❌ لا توجد مجموعات لديك صلاحية النشر فيها.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-        return
-    
-    keyboard.add(types.InlineKeyboardButton("➡️ التالي", callback_data="next_step"))
-    
-    bot.edit_message_text(
-        "اختر المجموعات المستهدفة (اضغط على المجموعة لتحديدها):",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=keyboard
-    )
+    async def handle_add_account(self, event):
+        user_id = event.sender_id
+        user_states[user_id] = {'action': 'add_account', 'step': 'phone'}
+        await event.respond("📱 أدخل رقم الهاتف مع رمز الدولة (مثال: +201234567890):")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("sel_"))
-def select_groups(call):
-    group_id = int(call.data[4:])
-    
-    # قراءة بيانات المستخدم
-    try:
-        with open(f"user_{call.message.chat.id}.json", "r") as f:
-            user_data = json.load(f)
-    except Exception as e:
-        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
-        bot.answer_callback_query(call.id, "حدث خطأ. يرجى المحاولة مرة أخرى.", show_alert=True)
-        return
-    
-    # تخزين المجموعات المختارة
-    if "selected_groups" not in user_
-        user_data["selected_groups"] = []
-    
-    if group_id in user_data["selected_groups"]:
-        user_data["selected_groups"].remove(group_id)
-        status = "تم إلغاء التحديد"
-    else:
-        user_data["selected_groups"].append(group_id)
-        status = "تم التحديد"
-    
-    # تحديث البيانات
-    with open(f"user_{call.message.chat.id}.json", "w") as f:
-        json.dump(user_data, f)
-    
-    # تحديث الأزرار
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    for group in user_data["all_groups"]:
-        if group["can_post"]:
-            status_icon = "✅" if group["id"] in user_data["selected_groups"] else "▫️"
-            keyboard.add(types.InlineKeyboardButton(f"{status_icon} {group['name']}", callback_data=f"sel_{group['id']}"))
-    
-    keyboard.add(types.InlineKeyboardButton("➡️ التالي", callback_data="next_step"))
-    
-    bot.edit_message_text(
-        "اختر المجموعات المستهدفة:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=keyboard
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == "next_step")
-def next_setup_step(call):
-    # قراءة بيانات المستخدم
-    try:
-        with open(f"user_{call.message.chat.id}.json", "r") as f:
-            user_data = json.load(f)
-    except Exception as e:
-        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
-        bot.answer_callback_query(call.id, "حدث خطأ. يرجى المحاولة مرة أخرى.", show_alert=True)
-        return
-    
-    if not user_data.get("selected_groups"):
-        bot.answer_callback_query(call.id, "يجب اختيار مجموعة واحدة على الأقل!", show_alert=True)
-        return
-    
-    bot.edit_message_text(
-        "أدخل المحتوى النصي المراد نشره:",
-        call.message.chat.id,
-        call.message.message_id
-    )
-    bot.register_next_step_handler(call.message, enter_content_step)
-
-def enter_content_step(message):
-    content = message.text
-    
-    # قراءة بيانات المستخدم
-    try:
-        with open(f"user_{message.chat.id}.json", "r") as f:
-            user_data = json.load(f)
-    except Exception as e:
-        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
-        bot.send_message(message.chat.id, "حدث خطأ. يرجى المحاولة مرة أخرى.")
-        return
-    
-    user_data["content"] = content
-    
-    # تحديث البيانات
-    with open(f"user_{message.chat.id}.json", "w") as f:
-        json.dump(user_data, f)
-    
-    bot.send_message(message.chat.id, "أدخل الفاصل الزمني بين النشر (بالثواني، الحد الأدنى 120):")
-    bot.register_next_step_handler(message, enter_interval_step)
-
-def enter_interval_step(message):
-    try:
-        interval = int(message.text)
-        if interval < 120:
-            bot.send_message(message.chat.id, "❌ الحد الأدنى للفاصل الزمني هو 120 ثانية. أعد المحاولة:")
-            bot.register_next_step_handler(message, enter_interval_step)
+    async def handle_delete_account(self, event):
+        user_id = event.sender_id
+        user_accounts = AccountManager.get_user_accounts(user_id)
+        
+        if not user_accounts:
+            await event.respond("❌ ليس لديك أي حسابات مسجلة.")
             return
         
-        # قراءة بيانات المستخدم
-        try:
-            with open(f"user_{message.chat.id}.json", "r") as f:
-                user_data = json.load(f)
-        except Exception as e:
-            logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
-            bot.send_message(message.chat.id, "حدث خطأ. يرجى المحاولة مرة أخرى.")
+        buttons = []
+        for phone in user_accounts:
+            buttons.append([Button.inline(f"❌ {phone}", f"delete_account:{phone}")])
+        
+        buttons.append([Button.inline("🔙 رجوع", b"main_menu")])
+        await event.respond("**اختر الحساب لحذفه:**", buttons=buttons)
+
+    async def handle_create_task(self, event):
+        user_id = event.sender_id
+        user_accounts = AccountManager.get_user_accounts(user_id)
+        
+        if not user_accounts:
+            await event.respond("❌ ليس لديك أي حسابات مسجلة. أضف حساب أولاً.")
             return
         
-        user_data["interval"] = interval
+        user_states[user_id] = {'action': 'create_task', 'step': 'select_account'}
+        buttons = []
+        for phone in user_accounts:
+            buttons.append([Button.inline(f"👤 {phone}", f"select_account:{phone}")])
         
-        # عرض ملخص الإعدادات
-        account = user_data["account"]
-        groups = user_data["selected_groups"]
-        content = user_data["content"][:20] + "..." if len(user_data["content"]) > 20 else user_data["content"]
+        buttons.append([Button.inline("🔙 رجوع", b"main_menu")])
+        await event.respond("**اختر الحساب للنشر:**", buttons=buttons)
+
+    async def handle_control_task(self, event):
+        user_id = event.sender_id
+        task = TaskManager.get_task(user_id)
         
-        summary = (
-            f"🎯 ملخص الإعدادات:\n"
-            f"الحساب: {account}\n"
-            f"المجموعات: {len(groups)} مجموعة\n"
-            f"المحتوى: {content}\n"
-            f"الفاصل: {interval} ثانية\n\n"
-            f"هل تريد حفظ هذه الإعدادات وتشغيل المهمة؟"
-        )
+        if not task:
+            await event.respond("❌ ليس لديك مهمة نشطة.")
+            return
         
-        keyboard = types.InlineKeyboardMarkup()
-        keyboard.row(
-            types.InlineKeyboardButton("✅ نعم", callback_data="start_task"),
-            types.InlineKeyboardButton("❌ لا", callback_data="cancel_task")
+        status_icon = "🟢" if task['status'] == 'active' else "🔴"
+        buttons = [
+            [Button.inline("⏸ إيقاف مؤقت", b"pause_task")],
+            [Button.inline("▶️ استئناف النشر", b"resume_task")],
+            [Button.inline("✏️ تعديل المحتوى", b"edit_content")],
+            [Button.inline("⏱ تعديل الفاصل الزمني", b"edit_interval")],
+            [Button.inline("📊 عرض الإحصائيات", b"show_stats")]
+        ]
+        await event.respond(
+            f"**تحكم بالمهمة:**\n"
+            f"- الحالة: {status_icon} {task['status']}\n"
+            f"- عدد المجموعات: {len(task['groups'])}\n"
+            f"- الفاصل الزمني: {task['interval']} ثانية",
+            buttons=buttons
         )
+
+    async def handle_callback(self, event):
+        user_id = event.sender_id
+        data = event.data.decode('utf-8')
         
-        bot.send_message(message.chat.id, summary, reply_markup=keyboard)
+        if data == "add_account":
+            await self.handle_add_account(event)
         
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ يرجى إدخال رقم صحيح. أعد المحاولة:")
-        bot.register_next_step_handler(message, enter_interval_step)
+        elif data == "create_task":
+            await self.handle_create_task(event)
+        
+        elif data == "control_task":
+            await self.handle_control_task(event)
+        
+        elif data == "main_menu":
+            await self.handle_start(event)
+        
+        elif data.startswith("delete_account:"):
+            phone = data.split(":")[1]
+            if AccountManager.delete_account(user_id, phone):
+                await event.respond(f"✅ تم حذف الحساب {phone} بنجاح")
+            else:
+                await event.respond("❌ فشل في حذف الحساب")
+        
+        elif data.startswith("select_account:"):
+            phone = data.split(":")[1]
+            user_states[user_id] = {
+                'action': 'create_task',
+                'step': 'select_groups',
+                'account': phone
+            }
+            await event.respond("📝 أرسل روابط المجموعات (كل رابط في سطر مستقل):")
+        
+        elif data == "pause_task":
+            if TaskManager.update_task(user_id, status='paused'):
+                await event.respond("⏸ تم إيقاف المهمة مؤقتاً")
+            else:
+                await event.respond("❌ فشل في إيقاف المهمة")
+        
+        elif data == "resume_task":
+            if TaskManager.update_task(user_id, status='active'):
+                await event.respond("▶️ تم استئناف المهمة")
+            else:
+                await event.respond("❌ فشل في استئناف المهمة")
+        
+        await event.answer()
 
-# --- التحكم في المهمة ---
-@bot.callback_query_handler(func=lambda call: call.data == "control_task")
-def control_task(call):
-    if not task_manager.current_settings:
-        bot.edit_message_text(
-            "❌ لا توجد مهمة نشطة حالياً.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-        return
-    
-    status = task_manager.get_status()
-    
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        types.InlineKeyboardButton("⏸️ إيقاف مؤقت" if not task_manager.pause_event.is_set() else "▶️ استئناف", callback_data="toggle_pause"),
-        types.InlineKeyboardButton("⏹️ إيقاف المهمة", callback_data="stop_task"),
-        types.InlineKeyboardButton("🔧 تعديل الإعدادات", callback_data="modify_task")
-    )
-    
-    bot.edit_message_text(
-        f"{status}\n\nاختر إجراءً:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=keyboard
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == "toggle_pause")
-def toggle_pause(call):
-    if task_manager.pause_event.is_set():
-        task_manager.resume_task()
-        status_text = "✅ تم استئناف المهمة"
-    else:
-        task_manager.pause_task()
-        status_text = "⏸️ تم إيقاف المهمة مؤقتاً"
-    
-    bot.answer_callback_query(call.id, status_text, show_alert=True)
-    control_task(call)
-
-@bot.callback_query_handler(func=lambda call: call.data == "stop_task")
-def stop_task(call):
-    async def stop():
-        await task_manager.stop_task()
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(stop())
-    finally:
-        loop.close()
-    
-    bot.edit_message_text(
-        "⏹️ تم إيقاف المهمة بنجاح!",
-        call.message.chat.id,
-        call.message.message_id
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == "start_task")
-def start_task(call):
-    # قراءة بيانات المستخدم
-    try:
-        with open(f"user_{call.message.chat.id}.json", "r") as f:
-            user_data = json.load(f)
-    except Exception as e:
-        logger.error(f"خطأ في قراءة بيانات المستخدم: {str(e)}")
-        bot.send_message(call.message.chat.id, "حدث خطأ. يرجى المحاولة مرة أخرى.")
-        return
-    
-    # تعيين البوت في مدير المهام
-    task_manager.set_bot(bot, call.message.chat.id)
-    
-    async def start_task_async():
-        await task_manager.start_task(
-            user_data["account"],
-            user_data["selected_groups"],
-            user_data["content"],
-            user_data["interval"]
-        )
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(start_task_async())
-        bot.send_message(
-            call.message.chat.id,
-            "✅ تم تشغيل المهمة بنجاح!\nاستخدم 'التحكم في المهمة' لمراقبة الحالة."
-        )
-    finally:
-        loop.close()
-
-@bot.callback_query_handler(func=lambda call: call.data == "modify_task")
-def modify_task(call):
-    if not task_manager.current_settings:
-        bot.edit_message_text(
-            "❌ لا توجد مهمة نشطة لتعديلها.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-        return
-    
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        types.InlineKeyboardButton("📝 تعديل المحتوى", callback_data="modify_content"),
-        types.InlineKeyboardButton("⏱️ تعديل الفاصل الزمني", callback_data="modify_interval"),
-        types.InlineKeyboardButton("👥 تعديل المجموعات", callback_data="modify_groups")
-    )
-    
-    bot.edit_message_text(
-        "اختر ما تريد تعديله:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=keyboard
-    )
-
-# --- واجهة المستخدم ---
-@bot.callback_query_handler(func=lambda call: call.data == "view_logs")
-def view_logs(call):
-    if not task_manager.current_settings:
-        bot.edit_message_text(
-            "لا توجد مهمة نشطة لعرض سجلاتها.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-        return
-    
-    log_text = "📊 سجل النشر:\n\n"
-    total_messages = 0
-    for group_id, count in task_manager.message_count.items():
-        log_text += f"• المجموعة {group_id}: {count} رسالة\n"
-        total_messages += count
-    
-    log_text += f"\nإجمالي الرسائل: {total_messages}"
-    log_text += f"\nالحالة الحالية: {'مُعَطَّل' if task_manager.pause_event.is_set() else 'نشطة'}"
-    
-    bot.edit_message_text(
-        log_text,
-        call.message.chat.id,
-        call.message.message_id
-    )
-
-# 🚀 بدء البوت
-def main():
-    # تحميل المهمة السابقة إذا وجدت
-    if os.path.exists(TASK_FILE):
-        try:
-            with open(TASK_FILE, "r", encoding="utf-8") as f:
-                settings = json.load(f)
+    async def handle_message(self, event):
+        user_id = event.sender_id
+        state = user_states.get(user_id, {})
+        
+        if state.get('action') == 'add_account' and state.get('step') == 'phone':
+            phone = event.text.strip()
+            if not phone.startswith('+'):
+                await event.respond("❌ رقم الهاتف يجب أن يبدأ بعلامة +")
+                return
             
-            # تعيين البوت في مدير المهام
-            task_manager.set_bot(bot, None)  # سيتم تعيين معرف المستخدم لاحقاً
+            user_states[user_id] = {'action': 'add_account', 'step': 'code', 'phone': phone}
+            await event.respond("🔑 أدخل رمز التحقق الذي تلقيته:")
+        
+        elif state.get('action') == 'add_account' and state.get('step') == 'code':
+            code = event.text.strip()
+            phone = state.get('phone')
             
-            async def start_previous_task():
-                await task_manager.start_task(
-                    settings["account"],
-                    settings["groups"],
-                    settings["content"],
-                    settings["interval"]
-                )
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             try:
-                loop.run_until_complete(start_previous_task())
-                logger.info("تم استعادة المهمة السابقة بنجاح")
-            finally:
-                loop.close()
-        except Exception as e:
-            logger.error(f"خطأ في استعادة المهمة: {str(e)}")
-    
-    # بدء البوت
-    logger.info("البوت يعمل الآن...")
-    bot.infinity_polling()
+                os.makedirs("sessions", exist_ok=True)
+                session_file = f"sessions/{user_id}_{phone}.session"
+                client = TelegramClient(session_file, API_ID, API_HASH)
+                await client.connect()
+                
+                if not await client.is_user_authorized():
+                    await client.sign_in(phone, code=code)
+                
+                AccountManager.add_account(user_id, phone, session_file)
+                await event.respond(f"✅ تم إضافة الحساب {phone} بنجاح!")
+                del user_states[user_id]
+                
+                # تحديث قائمة المجموعات
+                await self.update_account_groups(user_id, phone, client)
+                
+            except Exception as e:
+                await event.respond(f"❌ فشل في إضافة الحساب: {str(e)}")
+        
+        elif state.get('action') == 'create_task' and state.get('step') == 'select_groups':
+            groups = [line.strip() for line in event.text.split('\n') if line.strip()]
+            account = state.get('account')
+            
+            user_states[user_id] = {
+                'action': 'create_task',
+                'step': 'enter_content',
+                'account': account,
+                'groups': groups
+            }
+            await event.respond("📝 أدخل المحتوى النصي الذي تريد نشره:")
+        
+        elif state.get('action') == 'create_task' and state.get('step') == 'enter_content':
+            content = event.text
+            account = state.get('account')
+            groups = state.get('groups')
+            
+            user_states[user_id] = {
+                'action': 'create_task',
+                'step': 'set_interval',
+                'account': account,
+                'groups': groups,
+                'content': content
+            }
+            await event.respond("⏱ أدخل الفاصل الزمني بين النشرات (بالثواني - الحد الأدنى 120 ثانية):")
+        
+        elif state.get('action') == 'create_task' and state.get('step') == 'set_interval':
+            try:
+                interval = max(int(event.text), MIN_INTERVAL)
+                account = state.get('account')
+                groups = state.get('groups')
+                content = state.get('content')
+                
+                task = TaskManager.create_task(user_id, account, groups, content, interval)
+                await event.respond(
+                    f"✅ تم إنشاء المهمة بنجاح!\n"
+                    f"- الحساب: {account}\n"
+                    f"- عدد المجموعات: {len(groups)}\n"
+                    f"- الفاصل الزمني: {interval} ثانية"
+                )
+                
+                # بدء مهمة النشر
+                if user_id not in self.running_tasks or self.running_tasks[user_id].done():
+                    self.running_tasks[user_id] = asyncio.create_task(self.run_posting_task(user_id))
+                
+                del user_states[user_id]
+                
+            except ValueError:
+                await event.respond("❌ يجب إدخال رقم صحيح للفاصل الزمني")
 
-if __name__ == "__main__":
-    # تأكد من وجود المتغيرات البيئية المطلوبة
-    if BOT_TOKEN == "YOUR_BOT_TOKEN":
-        logger.error("يرجى تعيين متغير البيئة BOT_TOKEN")
-        exit(1)
+    async def update_account_groups(self, user_id, phone, client):
+        try:
+            dialogs = await client.get_dialogs()
+            groups = {}
+            
+            for dialog in dialogs:
+                if isinstance(dialog.entity, types.Channel) and dialog.is_group:
+                    groups[str(dialog.entity.id)] = {
+                        'title': dialog.entity.title,
+                        'username': dialog.entity.username,
+                        'last_check': datetime.now().isoformat()
+                    }
+            
+            user_id_str = str(user_id)
+            if user_id_str in accounts and phone in accounts[user_id_str]:
+                accounts[user_id_str][phone]['groups'] = groups
+                AccountManager.save_accounts()
+            
+        except Exception as e:
+            logger.error(f"خطأ في تحديث المجموعات: {e}")
+
+    async def run_posting_task(self, user_id):
+        user_id_str = str(user_id)
+        while True:
+            task = TaskManager.get_task(user_id_str)
+            if not task or task['status'] != 'active':
+                await asyncio.sleep(10)
+                continue
+            
+            account_info = accounts.get(user_id_str, {}).get(task['account'])
+            if not account_info:
+                await self.bot.send_message(user_id, "❌ الحساب المرتبط بالمهمة غير موجود")
+                break
+            
+            try:
+                # إنشاء عميل للحساب
+                client = TelegramClient(
+                    account_info['session'],
+                    API_ID,
+                    API_HASH
+                )
+                await client.connect()
+                
+                if not await client.is_user_authorized():
+                    await self.bot.send_message(user_id, f"❌ جلسة الحساب {task['account']} منتهية الصلاحية")
+                    break
+                
+                # تنفيذ النشر في المجموعات
+                for group_id, group_info in task['groups'].items():
+                    if group_info['status'] != 'active':
+                        continue
+                    
+                    try:
+                        await client.send_message(int(group_id), task['content'])
+                        task['groups'][group_id]['count'] += 1
+                        logger.info(f"تم النشر في {group_id} للحساب {task['account']}")
+                    except (FloodWaitError, ChannelInvalidError, ChatWriteForbiddenError) as e:
+                        logger.warning(f"خطأ في النشر لـ {group_id}: {str(e)}")
+                        task['groups'][group_id]['status'] = 'error'
+                    except Exception as e:
+                        logger.error(f"خطأ غير متوقع في النشر: {str(e)}")
+                
+                # تحديث بيانات المهمة
+                task['last_run'] = datetime.now().isoformat()
+                TaskManager.update_task(user_id_str, **task)
+                
+                # الانتظار للفاصل الزمني
+                await asyncio.sleep(task['interval'])
+                
+            except Exception as e:
+                logger.error(f"خطأ في مهمة النشر: {str(e)}")
+                await self.bot.send_message(user_id, f"❌ خطأ جسيم في المهمة: {str(e)}")
+                await asyncio.sleep(60)
+
+    def run(self):
+        self.bot.run_until_disconnected()
+
+if __name__ == '__main__':
+    # إنشاء المجلدات الضرورية
+    os.makedirs("sessions", exist_ok=True)
     
-    logger.info("بدء تشغيل البوت...")
-    main()
+    AccountManager.load_data()
+    poster = TelegramAutoPoster()
+    
+    # بدء مهام النشر للمهام النشطة
+    for user_id in list(tasks.keys()):
+        task = tasks[user_id]
+        if task.get('status') == 'active':
+            poster.running_tasks[int(user_id)] = asyncio.create_task(
+                poster.run_posting_task(int(user_id)))
+    
+    poster.run()
