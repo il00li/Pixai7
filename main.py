@@ -13,7 +13,7 @@ load_dotenv()
 # تهيئة الإعدادات
 API_ID = int(os.getenv('API_ID', 23656977))
 API_HASH = os.getenv('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7966976239:AAHyzY1KwJBWdVncELgl-O9VMFZoav6smZM')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7966976239:AAFjCFXvxixZqnfBrfqftj0iXmcX67WI7lY')
 TIMEOUT = 120  # 120 ثانية = دقيقتين
 
 # تهيئة السجلات
@@ -190,3 +190,4 @@ async def handle_messages(event):
 if __name__ == '__main__':
     logger.info(f"تم تشغيل البوت | API_ID: {API_ID} | المهلة: {TIMEOUT} ثانية")
     bot.run_until_disconnected()
+
