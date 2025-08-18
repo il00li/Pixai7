@@ -27,9 +27,9 @@ def load_or_create_config():
         return json.load(open(CFG_FILE, "r", encoding="utf-8"))
     # عند أول تشغيل، نطلب من المطور بيانات البوت:
     cfg = {}
-    cfg["api_id"]    = int(input("API_ID: ").strip())
-    cfg["api_hash"]  = input("API_HASH: ").strip()
-    cfg["bot_token"] = input("BOT_TOKEN: ").strip()
+    cfg["api_id"]    = int(input("23656977: ").strip())
+    cfg["api_hash"]  = input("49d3f43531a92b3f5bc403766313ca1e: ").strip()
+    cfg["bot_token"] = input("7966976239:AAF0ypJKeGiKVBS9yowQxlUDh9kpzjsNG_Q: ").strip()
     with open(CFG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     return cfg
@@ -320,3 +320,4 @@ async def on_button(event):
 # 10. تشغيل البوت
 print("🚀 Bot is starting...")
 client.run_until_disconnected() 
+
