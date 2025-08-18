@@ -26,7 +26,7 @@ load_dotenv()
 # تهيئة الإعدادات
 API_ID = int(os.getenv('API_ID', 23656977))
 API_HASH = os.getenv('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7966976239:AAFjCFXvxixZqnfBrfqftj0iXmcX67WI7lY')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '8110119856:AAGW43nAU_yO7PF7CQ096kKDlWb-Eab7IP4')
 TIMEOUT = 300  # 300 ثانية = 5 دقائق
 ADMIN_ID = 7251748706 # استبدل بأيدي المدير الفعلي
 MANDATORY_CHANNELS = ['crazys7', 'AWU87']  # قنوات الاشتراك الإجباري
