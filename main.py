@@ -1,443 +1,322 @@
+# bot.py
+# 
+# هذا الملف جاهز للعمل مباشرة. 
+# عند أول تشغيل سيطلب منك:
+#   • API_ID
+#   • API_HASH
+#   • BOT_TOKEN
+# ثم يحفظها تلقائيًا في ملف config.json ولا يحتاج أي تعديل بعد ذلك.
+#
+# قبل التشغيل: تأكد من تثبيت الحزم التالية عبر:
+# pip install telethon apscheduler
+
 import os
 import json
-import asyncio
-import logging
-from datetime import datetime
-from telethon import TelegramClient, events, Button, types
-from telethon.errors import FloodWaitError, ChannelInvalidError, ChatWriteForbiddenError
+from datetime import datetime, timedelta
 
-# التكوينات الأساسية
-API_ID = 23656977
-API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
-BOT_TOKEN = '7966976239:AAF0ypJKeGiKVBS9yowQxlUDh9kpzjsNG_Q'  # استبدل هذا برمز البوت الخاص بك
-DATA_DIR = 'data'
-ACCOUNTS_FILE = os.path.join(DATA_DIR, 'accounts.json')
-TASKS_FILE = os.path.join(DATA_DIR, 'tasks.json')
-LOGS_DIR = os.path.join(DATA_DIR, 'logs')
-MIN_INTERVAL = 120  # 2 دقائق بالثواني
+from telethon import TelegramClient, events, Button
+from telethon.errors import ChatWriteForbiddenError
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# إنشاء المجلدات اللازمة
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(LOGS_DIR, exist_ok=True)
+# --------------------------------------------------
+# 1. تحميل أو إنشاء ملف الإعدادات config.json
+CFG_FILE = "config.json"
 
-# إعدادات التسجيل - تم التصحيح هنا
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    filename=os.path.join(LOGS_DIR, 'bot.log')
-logger = logging.getLogger(__name__)
+def load_or_create_config():
+    if os.path.exists(CFG_FILE):
+        return json.load(open(CFG_FILE, "r", encoding="utf-8"))
+    # عند أول تشغيل، نطلب من المطور بيانات البوت:
+    cfg = {}
+    cfg["api_id"]    = int(input("API_ID: ").strip())
+    cfg["api_hash"]  = input("API_HASH: ").strip()
+    cfg["bot_token"] = input("BOT_TOKEN: ").strip()
+    with open(CFG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    return cfg
 
-# هياكل البيانات
-accounts = {}
-tasks = {}
-user_states = {}
+cfg = load_or_create_config()
+API_ID    = cfg["23656977"]
+API_HASH  = cfg["49d3f43531a92b3f5bc403766313ca1e"]
+BOT_TOKEN = cfg["7966976239:AAF0ypJKeGiKVBS9yowQxlUDh9kpzjsNG_Q"]
 
-class AccountManager:
-    @staticmethod
-    def load_data():
-        global accounts, tasks
+# --------------------------------------------------
+# 2. دوال التخزين في users.json
+DATA_FILE = "users.json"
+
+def load_data():
+    try:
+        return json.load(open(DATA_FILE, "r", encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def get_user(uid):
+    return load_data().get(str(uid), {})
+
+def set_user(uid, info):
+    data = load_data()
+    data[str(uid)] = info
+    save_data(data)
+
+def remove_user(uid):
+    data = load_data()
+    data.pop(str(uid), None)
+    save_data(data)
+
+# --------------------------------------------------
+# 3. تهيئة عميل تلغرام وجدول المهام
+client    = TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+scheduler = AsyncIOScheduler()
+scheduler.start()
+
+# --------------------------------------------------
+# 4. قائمة الأزرار الرئيسية
+def main_menu():
+    return [
+        [Button.inline("إضافة مجموعات", b"add_groups"),
+         Button.inline("حذف مجموعة", b"remove_group")],
+        [Button.inline("تغيير الرسالة", b"set_message"),
+         Button.inline("تعيين الفاصل", b"set_interval")],
+        [Button.inline("تفعيل النشر", b"enable"),
+         Button.inline("إيقاف النشر", b"disable")],
+        [Button.inline("إضافة حساب", b"add_account"),
+         Button.inline("حذف حساب", b"delete_account")],
+    ]
+
+# --------------------------------------------------
+# 5. فحص صلاحية الاشتراك
+def check_subscription(uid, event):
+    user = get_user(uid)
+    end = user.get("subscription_end")
+    if end:
+        now = datetime.utcnow()
+        sub_end = datetime.fromisoformat(end)
+        if now >= sub_end:
+            remove_user(uid)
+            event.reply(
+                "⛔ انتهت صلاحية اشتراكك وتم حذف جلستك.\n"
+                "للتجديد اضغط الزر أدناه:",
+                buttons=[[Button.inline("تجديد الاشتراك", b"renew")]]
+            )
+            return False
+    return True
+
+# --------------------------------------------------
+# 6. جدولة مهمة نشر تلقائي
+def schedule_job(uid, group, message, interval):
+    job_id = f"{uid}:{group}"
+    def job():
         try:
-            if os.path.exists(ACCOUNTS_FILE):
-                with open(ACCOUNTS_FILE, 'r') as f:
-                    accounts = json.load(f)
-            if os.path.exists(TASKS_FILE):
-                with open(TASKS_FILE, 'r') as f:
-                    tasks = json.load(f)
-        except Exception as e:
-            logger.error(f"خطأ في تحميل البيانات: {e}")
+            client.send_message(group, message)
+        except ChatWriteForbiddenError:
+            # إذا فشل النشر، نحذف المجموعة من المستخدم
+            user = get_user(uid)
+            if group in user.get("groups", []):
+                user["groups"].remove(group)
+                set_user(uid, user)
+            client.send_message(uid,
+                f"❌ فشل النشر في {group} وتمت إزالته تلقائيًا."
+            )
+    scheduler.add_job(job, "interval",
+                      minutes=interval,
+                      id=job_id,
+                      replace_existing=True)
 
-    @staticmethod
-    def save_accounts():
-        with open(ACCOUNTS_FILE, 'w') as f:
-            json.dump(accounts, f, indent=4, ensure_ascii=False)
+def remove_all_jobs(uid):
+    for job in scheduler.get_jobs():
+        if job.id.startswith(f"{uid}:"):
+            scheduler.remove_job(job.id)
 
-    @staticmethod
-    def save_tasks():
-        with open(TASKS_FILE, 'w') as f:
-            json.dump(tasks, f, indent=4, ensure_ascii=False)
+# --------------------------------------------------
+# 7. معالج أمر /start
+@client.on(events.NewMessage(pattern="/start"))
+async def on_start(event):
+    uid = event.sender_id
+    # ابدأ تسجيل جديد أو عرض القائمة
+    if not check_subscription(uid, event):
+        return
 
-    @staticmethod
-    def get_user_accounts(user_id):
-        return accounts.get(str(user_id), {})
-
-    @staticmethod
-    def add_account(user_id, phone, session_file):
-        user_id = str(user_id)
-        if user_id not in accounts:
-            accounts[user_id] = {}
-        accounts[user_id][phone] = {
-            'session': session_file,
-            'groups': {},
-            'last_check': datetime.now().isoformat()
+    user = get_user(uid)
+    if user.get("phone"):
+        # مستخدم مسجل سابقًا
+        await event.reply("أهلاً من جديد! اختر من القائمة:", buttons=main_menu())
+    else:
+        # تسجيل جديد: نطلب رقم الهاتف
+        user = {
+            "state": "await_phone",
+            "groups": [],
+            "message": "",
+            "interval": 5,
+            # اشتراك 30 يوم افتراضي
+            "subscription_end": (datetime.utcnow() + timedelta(days=30)).isoformat()
         }
-        AccountManager.save_accounts()
+        set_user(uid, user)
+        await event.reply("مرحباً! الرجاء إدخال رقم هاتفك (مثال: +9677XXXXXXX):")
 
-    @staticmethod
-    def delete_account(user_id, phone):
-        user_id = str(user_id)
-        if user_id in accounts and phone in accounts[user_id]:
-            del accounts[user_id][phone]
-            AccountManager.save_accounts()
-            return True
-        return False
+# --------------------------------------------------
+# 8. معالج الرسائل النصية للحالات المختلفة
+@client.on(events.NewMessage())
+async def on_message(event):
+    uid  = event.sender_id
+    text = event.raw_text.strip()
+    if not check_subscription(uid, event):
+        return
 
-class TaskManager:
-    @staticmethod
-    def create_task(user_id, account, groups, content, interval):
-        user_id = str(user_id)
-        tasks[user_id] = {
-            'account': account,
-            'groups': {g: {'status': 'active', 'count': 0} for g in groups},
-            'content': content,
-            'interval': max(interval, MIN_INTERVAL),
-            'status': 'active',
-            'created_at': datetime.now().isoformat(),
-            'last_run': None
-        }
-        TaskManager.save_tasks()
-        return tasks[user_id]
+    user  = get_user(uid)
+    state = user.get("state")
 
-    @staticmethod
-    def get_task(user_id):
-        user_id = str(user_id)
-        return tasks.get(user_id)
+    # استقبال رقم الهاتف
+    if state == "await_phone":
+        user["phone"] = text
+        user["state"] = None
+        set_user(uid, user)
+        await event.reply("✅ تم حفظ رقم الهاتف!\nاختر من القائمة:", buttons=main_menu())
+        return
 
-    @staticmethod
-    def update_task(user_id, **kwargs):
-        user_id = str(user_id)
-        if user_id in tasks:
-            tasks[user_id].update(kwargs)
-            TaskManager.save_tasks()
-            return True
-        return False
+    # استقبال روابط المجموعات
+    if state == "await_new_groups":
+        user.setdefault("groups", []).append(text)
+        set_user(uid, user)
+        await event.reply(f"✅ تمت إضافة المجموعة:\n{text}\n\nللمزيد أرسل رابطًا آخر أو اضغط رجوع.", buttons=[
+            [Button.inline("رجوع", b"back_to_menu")]
+        ])
+        return
 
-    @staticmethod
-    def pause_group(user_id, group_id):
-        user_id = str(user_id)
-        if user_id in tasks and group_id in tasks[user_id]['groups']:
-            tasks[user_id]['groups'][group_id]['status'] = 'paused'
-            TaskManager.save_tasks()
-            return True
-        return False
+    # استقبال نص الرسالة
+    if state == "await_message":
+        user["message"] = text
+        user["state"]   = None
+        set_user(uid, user)
+        await event.reply("✅ تم حفظ نص الرسالة.\nاختر من القائمة:", buttons=main_menu())
+        return
 
-    @staticmethod
-    def resume_group(user_id, group_id):
-        user_id = str(user_id)
-        if user_id in tasks and group_id in tasks[user_id]['groups']:
-            tasks[user_id]['groups'][group_id]['status'] = 'active'
-            TaskManager.save_tasks()
-            return True
-        return False
+    # استقبال الفاصل الزمني
+    if state == "await_interval":
+        try:
+            mins = int(text)
+            user["interval"] = mins
+            user["state"]    = None
+            set_user(uid, user)
+            await event.reply(f"✅ تم تعيين الفاصل إلى {mins} دقيقة.\nاختر من القائمة:", buttons=main_menu())
+        except ValueError:
+            await event.reply("⚠️ الرجاء إدخال عدد صحيح للفاصل بالدقائق:")
+        return
 
-class TelegramAutoPoster:
-    def __init__(self):
-        self.bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-        self.register_handlers()
-        self.running_tasks = {}
-        
-    def register_handlers(self):
-        self.bot.add_event_handler(self.handle_start, events.NewMessage(pattern='/start'))
-        self.bot.add_event_handler(self.handle_add_account, events.NewMessage(pattern='/add_account'))
-        self.bot.add_event_handler(self.handle_delete_account, events.NewMessage(pattern='/delete_account'))
-        self.bot.add_event_handler(self.handle_create_task, events.NewMessage(pattern='/create_task'))
-        self.bot.add_event_handler(self.handle_control_task, events.NewMessage(pattern='/control_task'))
-        self.bot.add_event_handler(self.handle_callback, events.CallbackQuery())
-        self.bot.add_event_handler(self.handle_message, events.NewMessage())
+# --------------------------------------------------
+# 9. معالج الضغط على الأزرار
+@client.on(events.CallbackQuery)
+async def on_button(event):
+    uid  = event.sender_id
+    data = event.data.decode()
+    if not check_subscription(uid, event):
+        return
 
-    async def handle_start(self, event):
-        user_id = event.sender_id
-        buttons = [
-            [Button.inline("➕ إضافة حساب", b"add_account")],
-            [Button.inline("📝 إنشاء مهمة نشر", b"create_task")],
-            [Button.inline("⚙️ التحكم بالمهمة", b"control_task")]
-        ]
-        await event.respond("**مرحباً في بوت النشر التلقائي!**\nاختر أحد الخيارات:", buttons=buttons)
+    user = get_user(uid)
 
-    async def handle_add_account(self, event):
-        user_id = event.sender_id
-        user_states[user_id] = {'action': 'add_account', 'step': 'phone'}
-        await event.respond("📱 أدخل رقم الهاتف مع رمز الدولة (مثال: +201234567890):")
+    # العودة إلى القائمة
+    if data == "back_to_menu":
+        await event.edit("القائمة الرئيسية:", buttons=main_menu())
+        return
 
-    async def handle_delete_account(self, event):
-        user_id = event.sender_id
-        user_accounts = AccountManager.get_user_accounts(user_id)
-        
-        if not user_accounts:
-            await event.respond("❌ ليس لديك أي حسابات مسجلة.")
+    # إضافة مجموعات
+    if data == "add_groups":
+        user["state"] = "await_new_groups"
+        set_user(uid, user)
+        await event.edit("أرسل روابط الدعوة للمجموعات (واحد لكل رسالة):")
+        return
+
+    # حذف مجموعة
+    if data == "remove_group":
+        markup = [[Button.inline(name, f"del:{i}")] 
+                  for i, name in enumerate(user.get("groups", []))]
+        if not markup:
+            await event.edit("قائمة المجموعات فارغة.", buttons=main_menu())
+        else:
+            await event.edit("اختر المجموعة للحذف:", buttons=markup + [[Button.inline("رجوع", b"back_to_menu")]])
+        return
+
+    # تنفيذ حذف مجموعة حسب الفهرس
+    if data.startswith("del:"):
+        idx = int(data.split(":",1)[1])
+        groups = user.get("groups", [])
+        if 0 <= idx < len(groups):
+            removed = groups.pop(idx)
+            user["groups"] = groups
+            set_user(uid, user)
+            await event.edit(f"✅ حُذفت المجموعة:\n{removed}", buttons=main_menu())
+        else:
+            await event.answer("⚠️ فهرس غير صحيح.", alert=True)
+        return
+
+    # تغيير نص الرسالة
+    if data == "set_message":
+        user["state"] = "await_message"
+        set_user(uid, user)
+        await event.edit("أرسل نص الرسالة الذي تريد نشره دورياً:")
+        return
+
+    # تعيين الفاصل الزمني
+    if data == "set_interval":
+        user["state"] = "await_interval"
+        set_user(uid, user)
+        await event.edit("أرسل الفاصل الزمني بالدقائق (عدد صحيح):")
+        return
+
+    # تفعيل النشر التلقائي
+    if data == "enable":
+        if not user.get("groups"):
+            await event.answer("⚠️ لم تضف أي مجموعة بعد.", alert=True)
             return
-        
-        buttons = []
-        for phone in user_accounts:
-            buttons.append([Button.inline(f"❌ {phone}", f"delete_account:{phone}")])
-        
-        buttons.append([Button.inline("🔙 رجوع", b"main_menu")])
-        await event.respond("**اختر الحساب لحذفه:**", buttons=buttons)
-
-    async def handle_create_task(self, event):
-        user_id = event.sender_id
-        user_accounts = AccountManager.get_user_accounts(user_id)
-        
-        if not user_accounts:
-            await event.respond("❌ ليس لديك أي حسابات مسجلة. أضف حساب أولاً.")
-            return
-        
-        user_states[user_id] = {'action': 'create_task', 'step': 'select_account'}
-        buttons = []
-        for phone in user_accounts:
-            buttons.append([Button.inline(f"👤 {phone}", f"select_account:{phone}")])
-        
-        buttons.append([Button.inline("🔙 رجوع", b"main_menu")])
-        await event.respond("**اختر الحساب للنشر:**", buttons=buttons)
-
-    async def handle_control_task(self, event):
-        user_id = event.sender_id
-        task = TaskManager.get_task(user_id)
-        
-        if not task:
-            await event.respond("❌ ليس لديك مهمة نشطة.")
-            return
-        
-        status_icon = "🟢" if task['status'] == 'active' else "🔴"
-        buttons = [
-            [Button.inline("⏸ إيقاف مؤقت", b"pause_task")],
-            [Button.inline("▶️ استئناف النشر", b"resume_task")],
-            [Button.inline("✏️ تعديل المحتوى", b"edit_content")],
-            [Button.inline("⏱ تعديل الفاصل الزمني", b"edit_interval")],
-            [Button.inline("📊 عرض الإحصائيات", b"show_stats")]
-        ]
-        await event.respond(
-            f"**تحكم بالمهمة:**\n"
-            f"- الحالة: {status_icon} {task['status']}\n"
-            f"- عدد المجموعات: {len(task['groups'])}\n"
-            f"- الفاصل الزمني: {task['interval']} ثانية",
-            buttons=buttons
+        remove_all_jobs(uid)
+        for g in user["groups"]:
+            schedule_job(uid, g, user["message"], user["interval"])
+        # رسالة تأكيد
+        text = (
+            "✅ تم تفعيل النشر التلقائي!\n\n"
+            f"• المجموعات: {len(user['groups'])}\n"
+            f"• الفاصل: {user['interval']} دقيقة\n"
+            f"• نص الرسالة: {user['message']!r}"
         )
+        await event.edit(text, buttons=main_menu())
+        return
 
-    async def handle_callback(self, event):
-        user_id = event.sender_id
-        data = event.data.decode('utf-8')
-        
-        if data == "add_account":
-            await self.handle_add_account(event)
-        
-        elif data == "create_task":
-            await self.handle_create_task(event)
-        
-        elif data == "control_task":
-            await self.handle_control_task(event)
-        
-        elif data == "main_menu":
-            await self.handle_start(event)
-        
-        elif data.startswith("delete_account:"):
-            phone = data.split(":")[1]
-            if AccountManager.delete_account(user_id, phone):
-                await event.respond(f"✅ تم حذف الحساب {phone} بنجاح")
-            else:
-                await event.respond("❌ فشل في حذف الحساب")
-        
-        elif data.startswith("select_account:"):
-            phone = data.split(":")[1]
-            user_states[user_id] = {
-                'action': 'create_task',
-                'step': 'select_groups',
-                'account': phone
-            }
-            await event.respond("📝 أرسل روابط المجموعات (كل رابط في سطر مستقل):")
-        
-        elif data == "pause_task":
-            if TaskManager.update_task(user_id, status='paused'):
-                await event.respond("⏸ تم إيقاف المهمة مؤقتاً")
-            else:
-                await event.respond("❌ فشل في إيقاف المهمة")
-        
-        elif data == "resume_task":
-            if TaskManager.update_task(user_id, status='active'):
-                await event.respond("▶️ تم استئناف المهمة")
-            else:
-                await event.respond("❌ فشل في استئناف المهمة")
-        
-        await event.answer()
+    # إيقاف النشر
+    if data == "disable":
+        remove_all_jobs(uid)
+        await event.edit("⏸️ تم إيقاف النشر التلقائي.", buttons=main_menu())
+        return
 
-    async def handle_message(self, event):
-        user_id = event.sender_id
-        state = user_states.get(user_id, {})
-        
-        if state.get('action') == 'add_account' and state.get('step') == 'phone':
-            phone = event.text.strip()
-            if not phone.startswith('+'):
-                await event.respond("❌ رقم الهاتف يجب أن يبدأ بعلامة +")
-                return
-            
-            user_states[user_id] = {'action': 'add_account', 'step': 'code', 'phone': phone}
-            await event.respond("🔑 أدخل رمز التحقق الذي تلقيته:")
-        
-        elif state.get('action') == 'add_account' and state.get('step') == 'code':
-            code = event.text.strip()
-            phone = state.get('phone')
-            
-            try:
-                os.makedirs("sessions", exist_ok=True)
-                session_file = f"sessions/{user_id}_{phone}.session"
-                client = TelegramClient(session_file, API_ID, API_HASH)
-                await client.connect()
-                
-                if not await client.is_user_authorized():
-                    await client.sign_in(phone, code=code)
-                
-                AccountManager.add_account(user_id, phone, session_file)
-                await event.respond(f"✅ تم إضافة الحساب {phone} بنجاح!")
-                del user_states[user_id]
-                
-                # تحديث قائمة المجموعات
-                await self.update_account_groups(user_id, phone, client)
-                
-            except Exception as e:
-                await event.respond(f"❌ فشل في إضافة الحساب: {str(e)}")
-        
-        elif state.get('action') == 'create_task' and state.get('step') == 'select_groups':
-            groups = [line.strip() for line in event.text.split('\n') if line.strip()]
-            account = state.get('account')
-            
-            user_states[user_id] = {
-                'action': 'create_task',
-                'step': 'enter_content',
-                'account': account,
-                'groups': groups
-            }
-            await event.respond("📝 أدخل المحتوى النصي الذي تريد نشره:")
-        
-        elif state.get('action') == 'create_task' and state.get('step') == 'enter_content':
-            content = event.text
-            account = state.get('account')
-            groups = state.get('groups')
-            
-            user_states[user_id] = {
-                'action': 'create_task',
-                'step': 'set_interval',
-                'account': account,
-                'groups': groups,
-                'content': content
-            }
-            await event.respond("⏱ أدخل الفاصل الزمني بين النشرات (بالثواني - الحد الأدنى 120 ثانية):")
-        
-        elif state.get('action') == 'create_task' and state.get('step') == 'set_interval':
-            try:
-                interval = max(int(event.text), MIN_INTERVAL)
-                account = state.get('account')
-                groups = state.get('groups')
-                content = state.get('content')
-                
-                task = TaskManager.create_task(user_id, account, groups, content, interval)
-                await event.respond(
-                    f"✅ تم إنشاء المهمة بنجاح!\n"
-                    f"- الحساب: {account}\n"
-                    f"- عدد المجموعات: {len(groups)}\n"
-                    f"- الفاصل الزمني: {interval} ثانية"
-                )
-                
-                # بدء مهمة النشر
-                if user_id not in self.running_tasks or self.running_tasks[user_id].done():
-                    self.running_tasks[user_id] = asyncio.create_task(self.run_posting_task(user_id))
-                
-                del user_states[user_id]
-                
-            except ValueError:
-                await event.respond("❌ يجب إدخال رقم صحيح للفاصل الزمني")
+    # إضافة حساب جديد (إعادة تسجيل)
+    if data == "add_account":
+        remove_all_jobs(uid)
+        remove_user(uid)
+        await event.edit("🔄 لنبدأ تسجيل حساب جديد. أرسل رقم هاتفك:", buttons=[])
+        # نعيد تسجيل مستخدم جديد
+        set_user(uid, {"state":"await_phone","groups":[], "message":"", "interval":5})
+        return
 
-    async def update_account_groups(self, user_id, phone, client):
-        try:
-            dialogs = await client.get_dialogs()
-            groups = {}
-            
-            for dialog in dialogs:
-                if isinstance(dialog.entity, types.Channel) and dialog.is_group:
-                    groups[str(dialog.entity.id)] = {
-                        'title': dialog.entity.title,
-                        'username': dialog.entity.username,
-                        'last_check': datetime.now().isoformat()
-                    }
-            
-            user_id_str = str(user_id)
-            if user_id_str in accounts and phone in accounts[user_id_str]:
-                accounts[user_id_str][phone]['groups'] = groups
-                AccountManager.save_accounts()
-            
-        except Exception as e:
-            logger.error(f"خطأ في تحديث المجموعات: {e}")
+    # حذف الحساب والجلسة
+    if data == "delete_account":
+        remove_all_jobs(uid)
+        remove_user(uid)
+        await event.edit("🗑️ تم حذف حسابك وجلسة البوت.")
+        return
 
-    async def run_posting_task(self, user_id):
-        user_id_str = str(user_id)
-        while True:
-            task = TaskManager.get_task(user_id_str)
-            if not task or task['status'] != 'active':
-                await asyncio.sleep(10)
-                continue
-            
-            account_info = accounts.get(user_id_str, {}).get(task['account'])
-            if not account_info:
-                await self.bot.send_message(user_id, "❌ الحساب المرتبط بالمهمة غير موجود")
-                break
-            
-            try:
-                # إنشاء عميل للحساب
-                client = TelegramClient(
-                    account_info['session'],
-                    API_ID,
-                    API_HASH
-                )
-                await client.connect()
-                
-                if not await client.is_user_authorized():
-                    await self.bot.send_message(user_id, f"❌ جلسة الحساب {task['account']} منتهية الصلاحية")
-                    break
-                
-                # تنفيذ النشر في المجموعات
-                for group_id, group_info in task['groups'].items():
-                    if group_info['status'] != 'active':
-                        continue
-                    
-                    try:
-                        await client.send_message(int(group_id), task['content'])
-                        task['groups'][group_id]['count'] += 1
-                        logger.info(f"تم النشر في {group_id} للحساب {task['account']}")
-                    except (FloodWaitError, ChannelInvalidError, ChatWriteForbiddenError) as e:
-                        logger.warning(f"خطأ في النشر لـ {group_id}: {str(e)}")
-                        task['groups'][group_id]['status'] = 'error'
-                    except Exception as e:
-                        logger.error(f"خطأ غير متوقع في النشر: {str(e)}")
-                
-                # تحديث بيانات المهمة
-                task['last_run'] = datetime.now().isoformat()
-                TaskManager.update_task(user_id_str, **task)
-                
-                # الانتظار للفاصل الزمني
-                await asyncio.sleep(task['interval'])
-                
-            except Exception as e:
-                logger.error(f"خطأ في مهمة النشر: {str(e)}")
-                await self.bot.send_message(user_id, f"❌ خطأ جسيم في المهمة: {str(e)}")
-                await asyncio.sleep(60)
+    # تجديد الاشتراك
+    if data == "renew":
+        end = (datetime.utcnow() + timedelta(days=30)).isoformat()
+        user.update({"subscription_end": end})
+        set_user(uid, user)
+        await event.edit("✅ تم تجديد اشتراكك 30 يوماً إضافية!", buttons=main_menu())
+        return
 
-    def run(self):
-        self.bot.run_until_disconnected()
+    # أي زر غير معروف
+    await event.answer()
 
-if __name__ == '__main__':
-    # إنشاء المجلدات الضرورية
-    os.makedirs("sessions", exist_ok=True)
-    
-    # تحميل البيانات
-    AccountManager.load_data()
-    
-    # بدء البوت
-    poster = TelegramAutoPoster()
-    
-    # بدء مهام النشر للمهام النشطة
-    for user_id_str in list(tasks.keys()):
-        task = tasks[user_id_str]
-        if task.get('status') == 'active':
-            user_id = int(user_id_str)
-            poster.running_tasks[user_id] = asyncio.create_task(poster.run_posting_task(user_id))
-    
-    # تشغيل البوت
-    poster.run() 
+# --------------------------------------------------
+# 10. تشغيل البوت
+print("🚀 Bot is starting...")
+client.run_until_disconnected() 
