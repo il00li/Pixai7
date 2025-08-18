@@ -22,7 +22,7 @@ import random
 # ===== الإعدادات المباشرة =====
 API_ID = 23656977
 API_HASH = '49d3f43531a92b3f5bc403766313ca1e'
-BOT_TOKEN = '7966976239:AAHyzY1KwJBWdVncELgl-O9VMFZoav6smZM'
+BOT_TOKEN = '8110119856:AAGZ7RNsHQuHncEgZ4af7FVom8uSnMP_CAM'
 ADMIN_ID = 7251748706  # أيدي المدير المحدد
 TIMEOUT = 300  # 300 ثانية = 5 دقائق
 MANDATORY_CHANNELS = ['crazys7', 'AWU87']  # قنوات الاشتراك الإجباري
