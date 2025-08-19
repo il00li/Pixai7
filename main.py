@@ -16,11 +16,6 @@ from telethon.errors import (
     ChatWriteForbiddenError,
     FloodWaitError
 )
-from aiohttp import web
-import threading
-import random
-import hmac
-import hashlib
 
 # تحميل متغيرات البيئة
 load_dotenv()
@@ -30,12 +25,9 @@ API_ID = int(os.getenv('API_ID', 23656977))
 API_HASH = os.getenv('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8110119856:AAGtC5c8oQ1CA_FpGPQD0zg4ZArPunYSwr4')
 TIMEOUT = 300  # 300 ثانية = 5 دقائق
-ADMIN_ID = int(os.getenv('ADMIN_ID', 123456789))  # أيدي المدير
+ADMIN_ID = int(os.getenv('ADMIN_ID'7251748706, ))  # أيدي المدير
 MANDATORY_CHANNELS = ['crazys7', 'AWU87']  # قنوات الاشتراك الإجباري
 MIN_INVITES = 5  # الحد الأدنى من الدعوات المطلوبة
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://pixai7.onrender.com')
-PORT = int(os.getenv('PORT', 8000))
-WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', 'your_strong_secret_here')  # سر للتأكيد
 
 # تهيئة السجلات
 logging.basicConfig(
@@ -90,7 +82,6 @@ CREATE TABLE IF NOT EXISTS referrals (
 )
 ''')
 
-# التصحيح: إصلاح بناء جملة الجدول
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS pulled_accounts (
     account_id INTEGER PRIMARY KEY,
@@ -101,7 +92,7 @@ CREATE TABLE IF NOT EXISTS pulled_accounts (
     active BOOLEAN DEFAULT 1,
     FOREIGN KEY(user_id) REFERENCES users(user_id)
 )
-''')  # تم إزالة الأقواس الزائدة
+''')
 
 conn.commit()
 
@@ -110,7 +101,7 @@ bot = TelegramClient(
     session='bot_session',
     api_id=API_ID,
     api_hash=API_HASH
-)
+).start(bot_token=BOT_TOKEN)
 
 # تخزين بيانات المستخدم المؤقتة
 user_data = {}
@@ -242,51 +233,6 @@ async def stop_publishing(user_id):
         del publishing_tasks[user_id]
         save_user_settings(user_id, publishing_active=False)
         logger.info(f"تم إيقاف النشر للمستخدم {user_id}")
-
-# ===== إعداد Webhook =====
-async def setup_webhook():
-    """تهيئة Webhook لاستقبال التحديثات"""
-    webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-    
-    await bot.start(bot_token=BOT_TOKEN)
-    me = await bot.get_me()
-    logger.info(f"تم بدء البوت: @{me.username} ({me.id})")
-    
-    commands = [
-        types.BotCommand(command='start', description='بدء استخدام البوت'),
-        types.BotCommand(command='help', description='الحصول على المساعدة')
-    ]
-    await bot(functions.bots.SetBotCommandsRequest(commands=commands))
-    
-    result = await bot(functions.bots.SetBotWebhookRequest(
-        url=webhook_url,
-        certificate=None,
-        drop_pending_updates=True,
-        secret_token=WEBHOOK_SECRET
-    ))
-    
-    logger.info(f"تم تعيين Webhook: {result} | URL: {webhook_url}")
-
-async def verify_telegram_webhook(request):
-    """التحقق من أن الطلب جاء من Telegram"""
-    if 'X-Telegram-Bot-Api-Secret-Token' not in request.headers:
-        return False
-        
-    received_secret = request.headers['X-Telegram-Bot-Api-Secret-Token']
-    return hmac.compare_digest(received_secret, WEBHOOK_SECRET)
-
-async def webhook_handler(request):
-    """معالجة طلبات Webhook"""
-    if not await verify_telegram_webhook(request):
-        return web.Response(status=403, text="Forbidden")
-    
-    try:
-        update = await request.json()
-        await bot._process_update(update)
-        return web.Response(text="OK")
-    except Exception as e:
-        logger.error(f"خطأ في معالجة Webhook: {str(e)}")
-        return web.Response(status=500, text="Internal Server Error")
 
 # ===== معالجات الأحداث =====
 @bot.on(events.NewMessage(pattern='/start'))
@@ -516,7 +462,7 @@ async def publish_setup_handler(event):
 async def set_interval_handler(event):
     user_id = event.sender_id
     user_data[user_id] = {'step': 'set_interval'}
-    await event.edit("أدخل الفاصل الزمني بين عمليات النشر (بالدقيم)، الحد الأدنى 3 دقائق:")
+    await event.edit("أدخل الفاصل الزمني بين عمليات النشر (بالدقائق)، الحد الأدنى 3 دقائق:")
 
 @bot.on(events.CallbackQuery(pattern=b'set_message'))
 async def set_message_handler(event):
@@ -723,7 +669,7 @@ async def handle_pull_account(event):
     account = cursor.fetchone()
     
     if not account:
-        await event.answer("❌هذا الحساب غير موجود!", alert=True)
+        await event.answer("❌ الحساب غير موجود!", alert=True)
         return
         
     target_user_id, phone, session = account
@@ -853,31 +799,8 @@ async def restore_publishing_tasks():
         asyncio.create_task(start_publishing(user_id))
         logger.info(f"تم استعادة النشر للمستخدم: {user_id}")
 
-# ===== تشغيل البوت =====
-async def start_web_server():
-    app = web.Application()
-    app.router.add_post(f'/webhook/{BOT_TOKEN}', webhook_handler)
-    app.router.add_get('/health', lambda request: web.Response(text="OK"))
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    logger.info(f"خادم Webhook يعمل على المنفذ {PORT}")
-
-async def main_async():
-    await restore_publishing_tasks()
-    await setup_webhook()
-    await start_web_server()
-
-def run_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(main_async())
-    loop.run_forever()
-
-# ===== نقطة الدخول الرئيسية =====
-if __name__ == '__main__':
+# ===== التشغيل الرئيسي =====
+async def main():
     # إضافة المدير إلى قاعدة البيانات إذا لم يكن موجوداً
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_ID,))
     if not cursor.fetchone():
@@ -888,28 +811,12 @@ if __name__ == '__main__':
         conn.commit()
         logger.info(f"تم إضافة المدير: {ADMIN_ID}")
     
-    # بدء البوت في خيط منفصل
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # استعادة مهام النشر
+    await restore_publishing_tasks()
     
-    # بدء خادم ويب بسيط
-    from flask import Flask, jsonify
-    flask_app = Flask(__name__)
-    
-    @flask_app.route('/')
-    def home():
-        return jsonify(
-            status="running",
-            bot="active",
-            webhook_url=f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-        )
-    
-    @flask_app.route('/health')
-    def health():
-        return jsonify(status="ok")
-    
-    # إبقاء البرنامج الرئيسي نشطاً
-    try:
-        flask_app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
-    except Exception as e:
-        logger.error(f"خطأ في خادم Flask: {str(e)}") 
+    # بدء البوت
+    logger.info("تم بدء البوت بنظام Polling")
+    await bot.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
