@@ -30,7 +30,7 @@ API_ID = int(os.getenv('API_ID', 23656977))
 API_HASH = os.getenv('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8110119856:AAGtC5c8oQ1CA_FpGPQD0zg4ZArPunYSwr4')
 TIMEOUT = 300  # 300 ثانية = 5 دقائق
-ADMIN_ID = int(os.getenv('ADMIN_ID', 7251748706))  # أيدي المدير
+ADMIN_ID = int(os.getenv('ADMIN_ID', 123456789))  # أيدي المدير
 MANDATORY_CHANNELS = ['crazys7', 'AWU87']  # قنوات الاشتراك الإجباري
 MIN_INVITES = 5  # الحد الأدنى من الدعوات المطلوبة
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://pixai7.onrender.com')
@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS referrals (
 )
 ''')
 
+# التصحيح: إصلاح بناء جملة الجدول
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS pulled_accounts (
     account_id INTEGER PRIMARY KEY,
@@ -99,7 +100,8 @@ CREATE TABLE IF NOT EXISTS pulled_accounts (
     pulled_by INTEGER,
     active BOOLEAN DEFAULT 1,
     FOREIGN KEY(user_id) REFERENCES users(user_id)
-''')
+)
+''')  # تم إزالة الأقواس الزائدة
 
 conn.commit()
 
@@ -514,7 +516,7 @@ async def publish_setup_handler(event):
 async def set_interval_handler(event):
     user_id = event.sender_id
     user_data[user_id] = {'step': 'set_interval'}
-    await event.edit("أدخل الفاصل الزمني بين عمليات النشر (بالدقائق)، الحد الأدنى 3 دقائق:")
+    await event.edit("أدخل الفاصل الزمني بين عمليات النشر (بالدقيم)، الحد الأدنى 3 دقائق:")
 
 @bot.on(events.CallbackQuery(pattern=b'set_message'))
 async def set_message_handler(event):
@@ -910,4 +912,4 @@ if __name__ == '__main__':
     try:
         flask_app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
     except Exception as e:
-        logger.error(f"خطأ في خادم Flask: {str(e)}")
+        logger.error(f"خطأ في خادم Flask: {str(e)}") 
