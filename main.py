@@ -723,7 +723,7 @@ async def handle_pull_account(event):
     account = cursor.fetchone()
     
     if not account:
-        await event.answer("❌ الحساب غير موجود!", alert=True)
+        await event.answer("❌هذا الحساب غير موجود!", alert=True)
         return
         
     target_user_id, phone, session = account
