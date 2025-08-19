@@ -25,7 +25,7 @@ API_ID = int(os.getenv('API_ID', 23656977))
 API_HASH = os.getenv('API_HASH', '49d3f43531a92b3f5bc403766313ca1e')
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8110119856:AAGtC5c8oQ1CA_FpGPQD0zg4ZArPunYSwr4')
 TIMEOUT = 300  # 300 ثانية = 5 دقائق
-ADMIN_ID = int(os.getenv('ADMIN_ID'7251748706, ))  # أيدي المدير
+ADMIN_ID = int(os.getenv('ADMIN_ID', 7251748706))  # أيدي المدير
 MANDATORY_CHANNELS = ['crazys7', 'AWU87']  # قنوات الاشتراك الإجباري
 MIN_INVITES = 5  # الحد الأدنى من الدعوات المطلوبة
 
